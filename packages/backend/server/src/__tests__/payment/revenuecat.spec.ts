@@ -1128,14 +1128,15 @@ test('should refresh user subscriptions (empty / revenuecat / stripe-only)', asy
   // prepare mocks:
   // first call returns Pro subscription
   // second call returns AI subscription.
+  const now = Date.now();
   const stub = mockSubSeq([
     [
       {
         identifier: 'Pro',
         isTrial: false,
         isActive: true,
-        latestPurchaseDate: new Date('2025-09-01T00:00:00.000Z'),
-        expirationDate: new Date('2026-09-01T00:00:00.000Z'),
+        latestPurchaseDate: new Date(now - 2 * 86400000),
+        expirationDate: new Date(now + 364 * 86400000),
         productId: 'app.affine.pro.Annual',
         store: 'app_store',
         willRenew: true,
@@ -1147,8 +1148,8 @@ test('should refresh user subscriptions (empty / revenuecat / stripe-only)', asy
         identifier: 'AI',
         isTrial: false,
         isActive: true,
-        latestPurchaseDate: new Date('2025-09-02T00:00:00.000Z'),
-        expirationDate: new Date('2026-09-02T00:00:00.000Z'),
+        latestPurchaseDate: new Date(now - 86400000),
+        expirationDate: new Date(now + 365 * 86400000),
         productId: 'app.affine.pro.ai.Annual',
         store: 'play_store',
         willRenew: true,
