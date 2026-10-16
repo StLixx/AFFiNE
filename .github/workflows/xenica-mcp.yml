@@ -1,0 +1,18 @@
+name: Xenica MCP bridge
+on:
+  push:
+    branches: [xenica/mcp-rw-0.27.4]
+    paths: [tools/xenica-mcp/**, .github/workflows/xenica-mcp.yml]
+  pull_request:
+    paths: [tools/xenica-mcp/**, .github/workflows/xenica-mcp.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t affine-rw-bridge:test tools/xenica-mcp
+      - run: docker run --rm --network none -v "$PWD/tools/xenica-mcp/test:/mcp/test:ro" --entrypoint node affine-rw-bridge:test --test test/documents.test.mjs
