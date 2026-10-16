@@ -2,9 +2,9 @@ name: Xenica MCP bridge
 on:
   push:
     branches: [xenica/mcp-rw-0.27.4]
-    paths: [tools/xenica-mcp/**, .github/workflows/xenica-mcp.yml]
+    paths: [tools/xenica-mcp/**, .github/workflows/xenica-mcp.yml, yarn.lock]
   pull_request:
-    paths: [tools/xenica-mcp/**, .github/workflows/xenica-mcp.yml]
+    paths: [tools/xenica-mcp/**, .github/workflows/xenica-mcp.yml, yarn.lock]
   workflow_dispatch:
 permissions:
   contents: read

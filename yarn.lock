@@ -18592,6 +18592,15 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@xenica/affine-rw-mcp@workspace:tools/xenica-mcp":
+  version: 0.0.0-use.local
+  resolution: "@xenica/affine-rw-mcp@workspace:tools/xenica-mcp"
+  dependencies:
+    socket.io-client: "npm:4.8.3"
+    yjs: "npm:13.6.21"
+  languageName: unknown
+  linkType: soft
+
 "@xmldom/xmldom@npm:^0.8.6, @xmldom/xmldom@npm:^0.8.8":
   version: 0.8.13
   resolution: "@xmldom/xmldom@npm:0.8.13"
@@ -33276,7 +33285,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"socket.io-client@npm:^4.8.3":
+"socket.io-client@npm:4.8.3, socket.io-client@npm:^4.8.3":
   version: 4.8.3
   resolution: "socket.io-client@npm:4.8.3"
   dependencies:
