@@ -32,7 +32,15 @@ Tests use an in-memory sync transport and temporary SQLite files, never a produc
 The image pins the original 0.27.4 OCI digest; reusing this bridge with another AFFiNE/native schema requires compatibility tests. Runtime configuration is mounted read-only at `/private/bridge.json`, state at `/state`:
 
 ```json
-{ "public_url": "https://affine.example.com", "upstream_url": "http://affine:3010", "owner_id": "fixed-owner", "workspace_id": "fixed-workspace", "email": "owner@example.com", "password": "EXISTING_PRIVATE_PASSWORD", "bridge_secret": "PRIVATE_RANDOM_SECRET" }
+{
+  "public_url": "https://affine.example.com",
+  "upstream_url": "http://affine:3010",
+  "owner_id": "fixed-owner",
+  "workspace_id": "fixed-workspace",
+  "email": "owner@example.com",
+  "password": "EXISTING_PRIVATE_PASSWORD",
+  "bridge_secret": "PRIVATE_RANDOM_SECRET"
+}
 ```
 
 Keep configuration and SQLite state private. The state contains document bodies needed for idempotent retry. Audit rows store hashed caller identity, tool, document ID, time and outcome; they do not log credentials or document text. Limit the service to one replica because write serialization is process-local. The original AFFiNE login session and permissions remain authoritative for sync access.
