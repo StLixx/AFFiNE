@@ -1454,6 +1454,11 @@ export const PackageList = [
     name: '@affine-tools/utils',
     workspaceDependencies: [],
   },
+  {
+    location: 'tools/xenica-mcp',
+    name: '@xenica/affine-rw-mcp',
+    workspaceDependencies: [],
+  },
 ];
 
 export type PackageName =
@@ -1578,4 +1583,5 @@ export type PackageName =
   | '@affine/doc-diff'
   | '@affine/playstore-auto-bump'
   | '@affine/revert-update'
-  | '@affine-tools/utils';
+  | '@affine-tools/utils'
+  | '@xenica/affine-rw-mcp';
