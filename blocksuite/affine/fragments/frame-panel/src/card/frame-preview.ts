@@ -303,7 +303,7 @@ export class FramePreview extends WithDisposable(ShadowlessElement) {
         await host.updateComplete;
         if (!signal.aborted && this.isConnected) this._refreshViewport();
       } catch (error) {
-        this._releasePreview();
+        if (!signal.aborted) this._releasePreview();
         throw error;
       }
     });

@@ -56,9 +56,22 @@ export class PreviewQueue {
     const [controller, work] = next;
     this.pending.delete(controller);
     this.active = controller;
+    let releaseAbort = () => {};
+    const aborted = new Promise<void>(resolve => {
+      const onAbort = () => resolve();
+      controller.signal.addEventListener('abort', onAbort, { once: true });
+      releaseAbort = () =>
+        controller.signal.removeEventListener('abort', onAbort);
+      if (controller.signal.aborted) resolve();
+    });
     try {
-      if (!controller.signal.aborted) await work(controller.signal);
+      // A detached Lit host may never resolve updateComplete. Cancellation must
+      // release the shared lane without waiting for that obsolete host.
+      if (!controller.signal.aborted) {
+        await Promise.race([work(controller.signal), aborted]);
+      }
     } finally {
+      releaseAbort();
       this.active = null;
       this.schedule();
     }

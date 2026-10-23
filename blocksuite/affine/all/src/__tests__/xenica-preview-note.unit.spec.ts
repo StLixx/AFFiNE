@@ -242,6 +242,21 @@ describe('shared preview lane', () => {
     expect(second).not.toHaveBeenCalled();
   });
 
+  it('releases an active lane when a disconnected host never finishes its update', async () => {
+    vi.useFakeTimers();
+    const queue = new PreviewQueue();
+    const cancel = queue.enqueue(() => new Promise<void>(() => {}));
+    const next = vi.fn(async () => {});
+    queue.enqueue(next);
+    await vi.advanceTimersByTimeAsync(32);
+    expect(queue.size).toBe(2);
+    cancel();
+    await vi.runAllTimersAsync();
+    expect(next).toHaveBeenCalledOnce();
+    expect(queue.size).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('leaves no scheduled timers when a panel closes before its first paint', () => {
     vi.useFakeTimers();
     const queue = new PreviewQueue();
