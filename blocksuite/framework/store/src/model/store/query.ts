@@ -27,7 +27,20 @@ export function runQuery(query: Query, block: Block) {
 
   if (blockViewType !== 'hidden') {
     const queryMode = query.mode;
-    setAncestorsToDisplayIfHidden(queryMode, block);
+    // A loose query displays everything by default. Hiding only schema leaves
+    // (for example edgeless Frames) cannot hide any block's ancestor, so a
+    // per-block walk through the complete native document is unnecessary.
+    const canHideAncestor =
+      queryMode !== 'loose' ||
+      query.match.some(rule => {
+        if (rule.viewType !== 'hidden') return false;
+        if (!rule.flavour) return true;
+        return (
+          block.model.store.schema.flavourSchemaMap.get(rule.flavour)?.model
+            .children?.length !== 0
+        );
+      });
+    if (canHideAncestor) setAncestorsToDisplayIfHidden(queryMode, block);
   }
 }
 
@@ -35,15 +48,7 @@ function getBlockViewType(query: Query, block: Block): BlockViewType {
   const flavour = block.model.flavour;
   const id = block.model.id;
   const queryMode = query.mode;
-  const props = block.model.keys.reduce(
-    (acc, key) => {
-      return {
-        ...acc,
-        [key]: block.model.props[key as keyof BlockModel['props']],
-      };
-    },
-    {} as Record<string, unknown>
-  );
+  let props: Record<string, unknown> | undefined;
   let blockViewType: BlockViewType =
     queryMode === 'loose' ? 'display' : 'hidden';
 
@@ -57,13 +62,19 @@ function getBlockViewType(query: Query, block: Block): BlockViewType {
     const matchQueryId = queryId == null ? true : queryId === id;
     const matchQueryFlavour =
       queryFlavour == null ? true : queryFlavour === flavour;
-    const matchQueryProps =
-      queryProps == null ? true : isMatch(props, queryProps);
-    if (matchQueryId && matchQueryFlavour && matchQueryProps) {
-      blockViewType = viewType;
-      return true;
+    if (!matchQueryId || !matchQueryFlavour) return false;
+    if (queryProps != null) {
+      props ??= block.model.keys.reduce(
+        (acc, key) => {
+          acc[key] = block.model.props[key as keyof BlockModel['props']];
+          return acc;
+        },
+        {} as Record<string, unknown>
+      );
+      if (!isMatch(props, queryProps)) return false;
     }
-    return false;
+    blockViewType = viewType;
+    return true;
   });
 
   return blockViewType;
