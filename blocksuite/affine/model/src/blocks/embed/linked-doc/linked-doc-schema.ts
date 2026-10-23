@@ -11,6 +11,7 @@ const defaultEmbedLinkedDocBlockProps: EmbedLinkedDocBlockProps = {
   pageId: '',
   style: EmbedLinkedDocStyles[1],
   caption: null,
+  referenceContent: false,
   // title & description aliases
   title: undefined,
   description: undefined,

@@ -16,6 +16,8 @@ export const EmbedLinkedDocStyles = [
 export type EmbedLinkedDocBlockProps = {
   style: (typeof EmbedLinkedDocStyles)[number];
   caption: string | null;
+  /** Explicit canonical-content reference; ordinary links keep their native behavior. */
+  referenceContent?: boolean;
   footnoteIdentifier: string | null;
 } & ReferenceInfo;
 

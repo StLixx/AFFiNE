@@ -9,7 +9,13 @@ import { EMBED_CARD_HEIGHT } from '@blocksuite/affine-shared/consts';
 import { matchModels } from '@blocksuite/affine-shared/utils';
 import { BlockStdScope } from '@blocksuite/std';
 import type { BlockModel, Query } from '@blocksuite/store';
-import { render, type TemplateResult } from 'lit';
+import { html, render, type TemplateResult } from 'lit';
+
+import {
+  referenceContentBlocks,
+  referenceContentElementTexts,
+  referenceContentQuery,
+} from './reference-content';
 
 import type { EmbedLinkedDocBlockComponent } from '../embed-linked-doc-block';
 import type { EmbedSyncedDocCard } from '../embed-synced-doc-block/components/embed-synced-doc-card';
@@ -119,6 +125,12 @@ async function renderNoteContent(
     return;
   }
 
+  const referenceContent =
+    'referenceContent' in card.model.props && card.model.props.referenceContent;
+  const params = card.model.props.params ?? {};
+  const elementTexts = referenceContent
+    ? referenceContentElementTexts(doc, params)
+    : [];
   const notes = getNotesFromDoc(doc);
   if (!notes) {
     return;
@@ -128,16 +140,18 @@ async function renderNoteContent(
   const isHorizontal = cardStyle === 'horizontal';
   const allowFlavours = isHorizontal ? [] : [ImageBlockModel];
 
-  const noteChildren = notes.flatMap(note =>
-    note.children.filter(model => {
-      if (matchModels(model, allowFlavours)) {
-        return true;
-      }
-      return filterTextModel(model);
-    })
-  );
+  const noteChildren = referenceContent
+    ? referenceContentBlocks(doc, params)
+    : notes.flatMap(note =>
+        note.children.filter(model => {
+          if (matchModels(model, allowFlavours)) {
+            return true;
+          }
+          return filterTextModel(model);
+        })
+      );
 
-  if (!noteChildren.length) {
+  if (!noteChildren.length && !elementTexts.length) {
     return;
   }
 
@@ -157,6 +171,26 @@ async function renderNoteContent(
   noteBlocksContainer.classList.add('affine-embed-doc-content-note-blocks');
   noteBlocksContainer.contentEditable = 'false';
   noteContainer.append(noteBlocksContainer);
+
+  if (elementTexts.length) {
+    const maxBlockCount = isHorizontal
+      ? 1
+      : Math.floor(EMBED_CARD_HEIGHT[cardStyle] / 20);
+    render(
+      html`${elementTexts
+        .slice(0, maxBlockCount)
+        .map(
+          ({ text }) => html`<rich-text
+            .yText=${text}
+            .readonly=${true}
+            .enableClipboard=${false}
+            .enableUndoRedo=${false}
+          ></rich-text>`
+        )}`,
+      noteBlocksContainer
+    );
+    return;
+  }
 
   if (isHorizontal) {
     // When the card is horizontal, we only render the first block
@@ -180,11 +214,15 @@ async function renderNoteContent(
       parent = doc.getParent(parent)?.id ?? null;
     }
   });
-  const query: Query = {
-    mode: 'strict',
-    match: ids.map(id => ({ id, viewType: 'display' })),
-  };
-  const previewDoc = doc.doc.getStore({ query });
+  const query: Query = referenceContent
+    ? referenceContentQuery(doc, noteChildren)
+    : {
+        mode: 'strict',
+        match: ids.map(id => ({ id, viewType: 'display' })),
+      };
+  const previewDoc = doc.doc.getStore(
+    referenceContent ? { query, readonly: true } : { query }
+  );
   const std = card.host.std;
   const previewSpec = std
     .get(ViewExtensionManagerIdentifier)
