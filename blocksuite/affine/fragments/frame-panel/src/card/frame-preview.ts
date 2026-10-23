@@ -113,6 +113,8 @@ export class FramePreview extends WithDisposable(ShadowlessElement) {
 
   private _cancelPreview: (() => void) | null = null;
 
+  private _resolveInitialViewport: (() => void) | null = null;
+
   private _watcherListeners = 0;
 
   static getDiagnostics(std: BlockStdScope) {
@@ -183,6 +185,11 @@ export class FramePreview extends WithDisposable(ShadowlessElement) {
   }
 
   private _initSpec() {
+    let resolveInitialViewport!: () => void;
+    const initialViewportReady = new Promise<void>(resolve => {
+      resolveInitialViewport = resolve;
+    });
+    this._resolveInitialViewport = resolveInitialViewport;
     const refreshViewport = this._refreshViewport.bind(this);
     const updateListenerCount = (delta: number) => {
       this._watcherListeners += delta;
@@ -227,6 +234,7 @@ export class FramePreview extends WithDisposable(ShadowlessElement) {
             const subscription = viewport.sizeUpdated.subscribe(() => {
               release();
               refreshViewport();
+              resolveInitialViewport();
             });
             const release = this.watch(subscription);
           })
@@ -240,6 +248,7 @@ export class FramePreview extends WithDisposable(ShadowlessElement) {
       FramePreviewWatcher,
       DocModeExtension(docModeService),
     ];
+    return initialViewportReady;
   }
 
   private _refreshViewport() {
@@ -285,6 +294,8 @@ export class FramePreview extends WithDisposable(ShadowlessElement) {
   private _releasePreview() {
     this._cancelPreview?.();
     this._cancelPreview = null;
+    this._resolveInitialViewport?.();
+    this._resolveInitialViewport = null;
     // Pending image requests otherwise retain detached bookmark DOM, its std
     // scope and the old panel through native browser pending-activity roots.
     // This host is permanently discarded; active or parked editors are untouched.
@@ -309,7 +320,7 @@ export class FramePreview extends WithDisposable(ShadowlessElement) {
     this._cancelPreview = getPreviewQueue(this.std).enqueue(async signal => {
       if (signal.aborted || !this.isConnected || !this._visible) return;
       try {
-        this._initSpec();
+        const initialViewportReady = this._initSpec();
         this._initPreviewDoc();
         if (!this._previewDoc) return;
         this._previewScope = new FramePreviewScope({
@@ -320,10 +331,12 @@ export class FramePreview extends WithDisposable(ShadowlessElement) {
         this.requestUpdate();
         await this.updateComplete;
         if (signal.aborted || !this.isConnected) return;
-        // The lane owns construction and our DOM commit. EditorHost's completion
-        // recursively awaits every descendant; keeping that unrelated async work
-        // in this lane starves other already-visible cards. Native Lit updates and
-        // the size watcher finish their rendering without owning this lane.
+        // Give this native viewport its first size/layout before starting a
+        // competing editor. Full EditorHost completion recursively awaits every
+        // descendant and starves the lane; a DOM commit alone releases too early.
+        // This existing native event is cancelled with this preview's owner.
+        await initialViewportReady;
+        if (signal.aborted || !this.isConnected) return;
         this._refreshViewport();
       } catch (error) {
         if (!signal.aborted) this._releasePreview();

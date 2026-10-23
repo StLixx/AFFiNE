@@ -15,6 +15,7 @@ import type { Store } from '@blocksuite/store';
 import { TestWorkspace } from '@blocksuite/store/test';
 import { signal } from '@preact/signals-core';
 import { html } from 'lit';
+import { Subject } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EdgelessNoteMask } from '../../../blocks/note/src/components/edgeless-note-mask';
@@ -93,6 +94,120 @@ describe('Frames preview runtime ownership', () => {
     document.body.append(preview);
     await preview.updateComplete;
     expect(allocate).not.toHaveBeenCalled();
+  });
+});
+
+describe('native initial viewport readiness', () => {
+  it('does not let a late event from a cancelled owner release the next owner', async () => {
+    const preview = new PreviewProbe();
+    const viewUpdated = new Subject<unknown>();
+    const sizeUpdated = new Subject<unknown>();
+    const owner = {
+      view: { viewUpdated },
+      get: () => ({ viewport: { sizeUpdated } }),
+    } as unknown as BlockStdScope;
+    preview.std = owner;
+    const lifecycle = preview as unknown as {
+      _watcherListeners: number;
+      _runtimePreviewExt: {
+        key?: string;
+        new (std: BlockStdScope): LifeCycleWatcher;
+      }[];
+      _initSpec(): Promise<void>;
+      _refreshViewport(): void;
+      _releasePreview(): void;
+    };
+    vi.spyOn(lifecycle, '_refreshViewport').mockImplementation(() => {});
+    const first = lifecycle._initSpec();
+    const FirstWatcher = lifecycle._runtimePreviewExt.find(
+      ext => ext.key === 'frame-preview-watcher'
+    )!;
+    const firstWatcher = new FirstWatcher(owner);
+    firstWatcher.mounted();
+    viewUpdated.next({
+      type: 'block',
+      method: 'add',
+      view: { model: { flavour: 'affine:page' } },
+    });
+    lifecycle._releasePreview();
+    await first;
+    let nextReady = false;
+    const next = lifecycle._initSpec().then(() => {
+      nextReady = true;
+    });
+    sizeUpdated.next({});
+    await Promise.resolve();
+    expect(nextReady).toBe(false);
+    firstWatcher.unmounted();
+    const NextWatcher = lifecycle._runtimePreviewExt.find(
+      ext => ext.key === 'frame-preview-watcher'
+    )!;
+    const nextWatcher = new NextWatcher(owner);
+    nextWatcher.mounted();
+    viewUpdated.next({
+      type: 'block',
+      method: 'add',
+      view: { model: { flavour: 'affine:page' } },
+    });
+    sizeUpdated.next({});
+    await next;
+    expect(nextReady).toBe(true);
+    nextWatcher.unmounted();
+    expect(lifecycle._watcherListeners).toBe(0);
+    lifecycle._releasePreview();
+    viewUpdated.complete();
+    sizeUpdated.complete();
+  });
+
+  it('waits for the first native viewport event and releases cancelled readiness', async () => {
+    const preview = new PreviewProbe();
+    const viewUpdated = new Subject<unknown>();
+    const sizeUpdated = new Subject<unknown>();
+    const owner = {
+      view: { viewUpdated },
+      get: () => ({ viewport: { sizeUpdated } }),
+    } as unknown as BlockStdScope;
+    preview.std = owner;
+    const lifecycle = preview as unknown as {
+      _watcherListeners: number;
+      _runtimePreviewExt: {
+        key?: string;
+        new (std: BlockStdScope): LifeCycleWatcher;
+      }[];
+      _initSpec(): Promise<void>;
+      _refreshViewport(): void;
+      _releasePreview(): void;
+    };
+    const refresh = vi
+      .spyOn(lifecycle, '_refreshViewport')
+      .mockImplementation(() => {});
+    let ready = false;
+    const promise = Promise.resolve(lifecycle._initSpec()).then(() => {
+      ready = true;
+    });
+    await Promise.resolve();
+    expect(ready).toBe(false);
+    const Watcher = lifecycle._runtimePreviewExt.find(
+      ext => ext.key === 'frame-preview-watcher'
+    )!;
+    const watcher = new Watcher(owner);
+    watcher.mounted();
+    viewUpdated.next({
+      type: 'block',
+      method: 'add',
+      view: { model: { flavour: 'affine:page' } },
+    });
+    await Promise.resolve();
+    expect(ready).toBe(false);
+    sizeUpdated.next({});
+    await promise;
+    expect(ready).toBe(true);
+    expect(refresh).toHaveBeenCalledOnce();
+    watcher.unmounted();
+    expect(lifecycle._watcherListeners).toBe(0);
+    const cancelled = lifecycle._initSpec();
+    lifecycle._releasePreview();
+    await cancelled;
   });
 });
 
@@ -447,7 +562,7 @@ describe('shared preview lane', () => {
     workspace.doc.destroy();
   });
 
-  it('releases the construction lane without awaiting unrelated descendant updates', async () => {
+  it('waits initial viewport readiness but not unrelated descendant updates', async () => {
     const workspace = new TestWorkspace();
     workspace.meta.initialize();
     const doc = workspace.createDoc('preview-lane-owner');
@@ -467,7 +582,11 @@ describe('shared preview lane', () => {
       _refreshViewport(): void;
       _schedulePreview(): void;
     };
-    vi.spyOn(lifecycle, '_initSpec').mockImplementation(() => {});
+    let initialViewportReady!: () => void;
+    const initialViewport = new Promise<void>(resolve => {
+      initialViewportReady = resolve;
+    });
+    vi.spyOn(lifecycle, '_initSpec').mockImplementation(() => initialViewport);
     vi.spyOn(lifecycle, '_initPreviewDoc').mockImplementation(() => {
       lifecycle._previewDoc = store;
     });
@@ -494,6 +613,9 @@ describe('shared preview lane', () => {
     const next = vi.fn(async () => {});
     const queue = getPreviewQueue(owner);
     queue.enqueue(next);
+    await vi.advanceTimersByTimeAsync(96);
+    expect(next).not.toHaveBeenCalled();
+    initialViewportReady();
     await vi.advanceTimersByTimeAsync(96);
     expect(next).toHaveBeenCalledOnce();
     expect(queue.size).toBe(0);
