@@ -12,7 +12,7 @@ import {
   rotatePoints,
 } from '@blocksuite/global/gfx';
 import type { Constructor } from '@blocksuite/global/utils';
-import { BlockModel } from '@blocksuite/store';
+import { BlockModel, type Store } from '@blocksuite/store';
 
 import {
   isLockedByAncestorImpl,
@@ -25,6 +25,17 @@ import type { EditorHost } from '../../view/index.js';
 import type { GfxCompatibleInterface, PointTestOptions } from './base.js';
 import type { GfxGroupModel } from './model.js';
 import type { SurfaceBlockModel } from './surface/surface-model.js';
+
+// Store replaces this record on each block add/delete. Checking its identity
+// preserves first-surface semantics even during a transaction, without another
+// per-element subscription or a full-document scan for every layer comparison.
+const surfaceCache = new WeakMap<
+  Store,
+  {
+    blocks: ReturnType<Store['blocks']['peek']>;
+    surface: SurfaceBlockModel | null;
+  }
+>();
 
 /**
  * The props that a graphics block model should have.
@@ -176,9 +187,13 @@ export class GfxBlockElementModel<
   }
 
   get surface(): SurfaceBlockModel | null {
-    const result = this.store.getBlocksByFlavour('affine:surface');
-    if (result.length === 0) return null;
-    return result[0].model as SurfaceBlockModel;
+    const blocks = this.store.blocks.peek();
+    const cached = surfaceCache.get(this.store);
+    if (cached?.blocks === blocks) return cached.surface;
+    const surface = (this.store.getBlocksByFlavour('affine:surface')[0]
+      ?.model ?? null) as SurfaceBlockModel | null;
+    surfaceCache.set(this.store, { blocks, surface });
+    return surface;
   }
 
   get w() {

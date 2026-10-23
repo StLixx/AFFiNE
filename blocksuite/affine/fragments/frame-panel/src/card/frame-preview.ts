@@ -18,9 +18,15 @@ import { GfxControllerIdentifier } from '@blocksuite/std/gfx';
 import { type ExtensionType, type Query, type Store } from '@blocksuite/store';
 import { css, html, nothing, type PropertyValues } from 'lit';
 import { property, query, state } from 'lit/decorators.js';
-import { guard } from 'lit/directives/guard.js';
 import { styleMap } from 'lit/directives/style-map.js';
 import debounce from 'lodash-es/debounce';
+
+import { getPreviewQueue } from './preview-queue.js';
+// A single native readonly Store per original editor Store. Its fixed model/
+// Yjs listeners are an explicitly retained cache; preview scopes are not cached.
+const previewStores = new WeakMap<Store, Store>();
+const connectedPreviews = new Set<FramePreview>();
+
 const DEFAULT_PREVIEW_CONTAINER_WIDTH = 280;
 const DEFAULT_PREVIEW_CONTAINER_HEIGHT = 166;
 
@@ -63,6 +69,18 @@ const styles = css`
 
 export const AFFINE_FRAME_PREVIEW = 'frame-preview';
 
+// A preview scope is disposable, never parked for reuse. Native host disconnect
+// and an early cancellation before first connection share one release owner.
+export class FramePreviewScope extends BlockStdScope {
+  private released = false;
+
+  override unmount() {
+    if (this.released) return;
+    this.released = true;
+    super.unmount();
+  }
+}
+
 export class FramePreview extends WithDisposable(ShadowlessElement) {
   static override styles = styles;
 
@@ -84,6 +102,46 @@ export class FramePreview extends WithDisposable(ShadowlessElement) {
   private _frameDisposables: DisposableGroup | null = null;
 
   private _previewDoc: Store | null = null;
+
+  private _previewScope: FramePreviewScope | null = null;
+
+  private _previewHost: EditorHost | null = null;
+
+  private _visibilityObserver: IntersectionObserver | null = null;
+
+  private _visible = false;
+
+  private _cancelPreview: (() => void) | null = null;
+
+  private _resolveInitialViewport: (() => void) | null = null;
+
+  private _watcherListeners = 0;
+
+  static getDiagnostics(std: BlockStdScope) {
+    const cards = [...connectedPreviews].filter(card => card.std === std);
+    const store = previewStores.get(std.store);
+    const surface = store?.getBlocksByFlavour('affine:surface')[0]?.model as
+      | { localElementModels: Iterable<unknown> }
+      | undefined;
+    return {
+      cachedLocalElements: surface
+        ? Array.from(surface.localElementModels).length
+        : 0,
+      connectedCards: cards.length,
+      scopes: cards.filter(card => card._previewScope).length,
+      jobs: getPreviewQueue(std).size,
+      scopedListeners: cards.reduce(
+        (count, card) =>
+          count +
+          Number(!!card._visibilityObserver) +
+          Number(!!card._frameDisposables) +
+          card._watcherListeners,
+        0
+      ),
+      cachedStores: Number(!!store),
+      cachedBlocks: store?.blockSize ?? 0,
+    };
+  }
 
   private _runtimePreviewExt: ExtensionType[] = [];
 
@@ -116,36 +174,71 @@ export class FramePreview extends WithDisposable(ShadowlessElement) {
   }
 
   private _initPreviewDoc() {
-    const doc = this._originalDoc.workspace.getDoc(this._originalDoc.id);
-    this._previewDoc =
-      doc?.getStore({ readonly: true, query: this._docFilter }) ?? null;
-    this.disposables.add(() => {
-      this._originalDoc.doc.removeStore({ query: this._docFilter });
-    });
+    const original = this._originalDoc;
+    let store = previewStores.get(original);
+    if (!store) {
+      const doc = original.workspace.getDoc(original.id);
+      store = doc?.getStore({ readonly: true, query: this._docFilter });
+      if (store) previewStores.set(original, store);
+    }
+    this._previewDoc = store ?? null;
   }
 
   private _initSpec() {
+    let resolveInitialViewport!: () => void;
+    const initialViewportReady = new Promise<void>(resolve => {
+      resolveInitialViewport = resolve;
+    });
+    this._resolveInitialViewport = resolveInitialViewport;
     const refreshViewport = this._refreshViewport.bind(this);
+    const updateListenerCount = (delta: number) => {
+      this._watcherListeners += delta;
+    };
     class FramePreviewWatcher extends LifeCycleWatcher {
       static override key = 'frame-preview-watcher';
+
+      private readonly cleanup = new DisposableGroup();
+
+      private watch<
+        T extends { unsubscribe(): void; readonly closed: boolean },
+      >(subscription: T) {
+        updateListenerCount(1);
+        let released = false;
+        const release = () => {
+          if (released) return;
+          released = true;
+          subscription.unsubscribe();
+          updateListenerCount(-1);
+        };
+        this.cleanup.add(release);
+        return release;
+      }
+
+      override unmounted() {
+        this.cleanup.dispose();
+      }
 
       override mounted() {
         const std = this.std;
         const { view } = std;
-        view.viewUpdated.subscribe(payload => {
-          if (
-            payload.type !== 'block' ||
-            payload.method !== 'add' ||
-            payload.view.model.flavour !== 'affine:page'
-          ) {
-            return;
-          }
-          const viewport = std.get(GfxControllerIdentifier).viewport;
-          const subscription = viewport.sizeUpdated.subscribe(() => {
-            subscription.unsubscribe();
-            refreshViewport();
-          });
-        });
+        this.watch(
+          view.viewUpdated.subscribe(payload => {
+            if (
+              payload.type !== 'block' ||
+              payload.method !== 'add' ||
+              payload.view.model.flavour !== 'affine:page'
+            ) {
+              return;
+            }
+            const viewport = std.get(GfxControllerIdentifier).viewport;
+            const subscription = viewport.sizeUpdated.subscribe(() => {
+              release();
+              refreshViewport();
+              resolveInitialViewport();
+            });
+            const release = this.watch(subscription);
+          })
+        );
       }
     }
 
@@ -155,6 +248,7 @@ export class FramePreview extends WithDisposable(ShadowlessElement) {
       FramePreviewWatcher,
       DocModeExtension(docModeService),
     ];
+    return initialViewportReady;
   }
 
   private _refreshViewport() {
@@ -170,7 +264,6 @@ export class FramePreview extends WithDisposable(ShadowlessElement) {
   private _renderSurfaceContent() {
     const { width, height } = this.frameViewportWH;
 
-    const _previewSpec = this._previewSpec.concat(this._runtimePreviewExt);
     return html`<div
       class="frame-preview-surface-container"
       style=${styleMap({
@@ -185,13 +278,7 @@ export class FramePreview extends WithDisposable(ShadowlessElement) {
           height: `${height}px`,
         })}
       >
-        ${guard([this._previewDoc, this.frame], () => {
-          if (!this._previewDoc || !this.frame) return nothing;
-          return new BlockStdScope({
-            store: this._previewDoc,
-            extensions: _previewSpec,
-          }).render();
-        })}
+        ${this._previewHost ?? nothing}
       </div>
     </div>`;
   }
@@ -199,24 +286,89 @@ export class FramePreview extends WithDisposable(ShadowlessElement) {
   private _setFrameDisposables(frame: FrameBlockModel) {
     this._clearFrameDisposables();
     this._frameDisposables = new DisposableGroup();
-    this._frameDisposables.add(
-      frame.propsUpdated.subscribe(
-        debounce(this._updateFrameViewportWH, 10, { leading: true })
-      )
-    );
+    const update = debounce(this._updateFrameViewportWH, 10, { leading: true });
+    this._frameDisposables.add(frame.propsUpdated.subscribe(update));
+    this._frameDisposables.add(() => update.cancel());
+  }
+
+  private _releasePreview() {
+    this._cancelPreview?.();
+    this._cancelPreview = null;
+    this._resolveInitialViewport?.();
+    this._resolveInitialViewport = null;
+    // Pending image requests otherwise retain detached bookmark DOM, its std
+    // scope and the old panel through native browser pending-activity roots.
+    // This host is permanently discarded; active or parked editors are untouched.
+    for (const image of this._previewHost?.querySelectorAll('img') ?? []) {
+      image.removeAttribute('srcset');
+      image.removeAttribute('src');
+    }
+    // Connected hosts invoke the native unmount chain on removal. Also release
+    // constructor-owned resources if cancellation happened before first connect.
+    // FramePreviewScope makes these two paths one idempotent release.
+    this._previewHost?.remove();
+    this._previewScope?.unmount();
+    this._previewHost = null;
+    this._previewScope = null;
+    this._previewDoc = null;
+    this._runtimePreviewExt = [];
+    this.requestUpdate();
+  }
+
+  private _schedulePreview() {
+    if (this._cancelPreview || !this.isConnected || !this._visible) return;
+    this._cancelPreview = getPreviewQueue(this.std).enqueue(async signal => {
+      if (signal.aborted || !this.isConnected || !this._visible) return;
+      try {
+        const initialViewportReady = this._initSpec();
+        this._initPreviewDoc();
+        if (!this._previewDoc) return;
+        this._previewScope = new FramePreviewScope({
+          store: this._previewDoc,
+          extensions: this._previewSpec.concat(this._runtimePreviewExt),
+        });
+        this._previewHost = this._previewScope.render();
+        this.requestUpdate();
+        await this.updateComplete;
+        if (signal.aborted || !this.isConnected) return;
+        // Give this native viewport its first size/layout before starting a
+        // competing editor. Full EditorHost completion recursively awaits every
+        // descendant and starves the lane; a DOM commit alone releases too early.
+        // This existing native event is cancelled with this preview's owner.
+        await initialViewportReady;
+        if (signal.aborted || !this.isConnected) return;
+        this._refreshViewport();
+      } catch (error) {
+        if (!signal.aborted) this._releasePreview();
+        throw error;
+      }
+    });
   }
 
   override connectedCallback() {
     super.connectedCallback();
-    this._initSpec();
-    this._initPreviewDoc();
+    connectedPreviews.add(this);
     this._updateFrameViewportWH();
     this._setFrameDisposables(this.frame);
+    this._visibilityObserver = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        if (entry.target !== this) continue;
+        this._visible = entry.isIntersecting;
+        if (this._visible) this._schedulePreview();
+        else this._releasePreview();
+      }
+    });
+    this._visibilityObserver.observe(this);
   }
 
   override disconnectedCallback() {
-    super.disconnectedCallback();
+    this._visible = false;
+    this._visibilityObserver?.disconnect();
+    this._visibilityObserver = null;
+    this._releasePreview();
     this._clearFrameDisposables();
+    connectedPreviews.delete(this);
+    super.disconnectedCallback();
   }
 
   override render() {
@@ -228,10 +380,16 @@ export class FramePreview extends WithDisposable(ShadowlessElement) {
     </div>`;
   }
 
-  override updated(_changedProperties: PropertyValues) {
+  override willUpdate(_changedProperties: PropertyValues) {
     if (_changedProperties.has('frame')) {
       this._setFrameDisposables(this.frame);
+      this._updateFrameViewportWH();
+      this._releasePreview();
+      this._schedulePreview();
     }
+  }
+
+  override updated(_changedProperties: PropertyValues) {
     if (_changedProperties.has('frameViewportWH')) {
       this._refreshViewport();
     }

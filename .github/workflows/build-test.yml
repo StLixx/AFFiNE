@@ -11,6 +11,11 @@ on:
     paths-ignore:
       - README.md
   pull_request:
+    # Xenica stable forks are built/tested on Infra under the shared 4CPU/6GiB budget.
+    # Their real source/tree/artifact/contract receipts are checked by StLixx/Xenica's trusted Harness.
+    # This routes execution; it is not an acceptance or a successful replacement check.
+    branches-ignore:
+      - xenica/stable-0.27.4
   merge_group:
 
 env:

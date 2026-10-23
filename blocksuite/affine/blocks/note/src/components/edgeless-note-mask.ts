@@ -19,9 +19,16 @@ export class EdgelessNoteMask extends SignalWatcher(
         if (!this.model.props.edgeless.collapse) {
           const bound = Bound.deserialize(this.model.xywh);
           const scale = this.model.props.edgeless.scale ?? 1;
-          const height = entry.contentRect.height * scale;
+          // The mask includes the editing hit-area outside the note. contentRect
+          // is already in CSS coordinates (viewport zoom must not be applied).
+          const extra = this.editing ? ACTIVE_NOTE_EXTRA_PADDING * 2 : 0;
+          const height = (entry.contentRect.height - extra) * scale;
 
-          if (!height || almostEqual(bound.h, height)) {
+          if (
+            !Number.isFinite(height) ||
+            height <= 0 ||
+            almostEqual(bound.h, height)
+          ) {
             return;
           }
 

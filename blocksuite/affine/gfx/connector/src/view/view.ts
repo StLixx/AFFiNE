@@ -11,6 +11,7 @@ import {
   generateKeyBetween,
   GfxElementModelView,
   GfxViewInteractionExtension,
+  leaseReadonlyLocalElement,
 } from '@blocksuite/std/gfx';
 
 import { mountConnectorLabelEditor } from '../text/edgeless-connector-label-editor';
@@ -42,6 +43,15 @@ export class ConnectorElementView extends GfxElementModelView<ConnectorElementMo
 
   private _initLabelMoving(): void {
     let curLabelElement: LocalShapeElementModel | null = null;
+    let releaseLabel: (() => void) | null = null;
+    const clearLabel = () => {
+      if (releaseLabel) releaseLabel();
+      else if (curLabelElement)
+        this.surface.deleteLocalElement(curLabelElement);
+      curLabelElement = null;
+      releaseLabel = null;
+    };
+    this.disposable.add(clearLabel);
 
     if (this.model.isLocked()) {
       return;
@@ -128,14 +138,23 @@ export class ConnectorElementView extends GfxElementModelView<ConnectorElementMo
       if (!this.model.labelXYWH || !this.model.text) {
         // Clean up existing label element if conditions are no longer met
         if (curLabelElement) {
-          this.surface.deleteLocalElement(curLabelElement);
-          curLabelElement = null;
+          clearLabel();
         }
         return;
       }
 
+      const lease =
+        !curLabelElement && this.std.store.readonly
+          ? leaseReadonlyLocalElement(
+              this.surface,
+              `#${this.model.id}-label`,
+              () => new LocalShapeElementModel(this.surface)
+            )
+          : null;
       const labelElement =
-        curLabelElement || new LocalShapeElementModel(this.surface);
+        curLabelElement ||
+        lease?.model ||
+        new LocalShapeElementModel(this.surface);
       labelElement.xywh = serializeXYWH(...this.model.labelXYWH);
       labelElement.index = generateKeyBetween(this.model.index, null);
 
@@ -148,10 +167,8 @@ export class ConnectorElementView extends GfxElementModelView<ConnectorElementMo
         labelElement.strokeColor = 'transparent';
         labelElement.strokeWidth = 0;
 
-        this.surface.addLocalElement(labelElement);
-        this.disposable.add(() => {
-          this.surface.deleteLocalElement(labelElement);
-        });
+        releaseLabel = lease?.release ?? null;
+        if (!lease || lease.created) this.surface.addLocalElement(labelElement);
         watchEvent(labelElement);
       }
     };

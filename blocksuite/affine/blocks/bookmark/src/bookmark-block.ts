@@ -22,7 +22,10 @@ import { type ClassInfo, classMap } from 'lit/directives/class-map.js';
 import { type StyleInfo, styleMap } from 'lit/directives/style-map.js';
 import { filter } from 'rxjs/operators';
 
-import { refreshBookmarkUrlData } from './utils.js';
+import {
+  invalidateBookmarkUrlRefresh,
+  refreshBookmarkUrlData,
+} from './utils.js';
 
 export const BOOKMARK_MIN_WIDTH = 450;
 
@@ -34,6 +37,8 @@ export class BookmarkBlockComponent extends CaptionedBlockComponent<BookmarkBloc
   );
 
   private _fetchAbortController?: AbortController;
+
+  private _observedUrl?: string;
 
   blockDraggable = true;
 
@@ -69,17 +74,27 @@ export class BookmarkBlockComponent extends CaptionedBlockComponent<BookmarkBloc
   });
 
   private readonly _updateLocalLinkPreview = () => {
+    // The local readonly request now owns loading; an older persistent refresh
+    // must not clear it when its cancellation settles.
+    invalidateBookmarkUrlRefresh(this);
     // cancel any inflight request
     this._fetchAbortController?.abort();
-    this._fetchAbortController = new AbortController();
+    const controller = new AbortController();
+    this._fetchAbortController = controller;
+    const requestedUrl = this.model.props.url;
+    const isCurrent = () =>
+      !controller.signal.aborted &&
+      this._fetchAbortController === controller &&
+      this.model.props.url === requestedUrl;
 
     this.loading = true;
     this.error = false;
 
     this.std
       .get(LinkPreviewServiceIdentifier)
-      .query(this.model.props.url, this._fetchAbortController.signal)
+      .query(requestedUrl, controller.signal)
       .then(data => {
+        if (!isCurrent()) return;
         this._localLinkPreview$.value = {
           icon: data.icon ?? null,
           title: data.title ?? null,
@@ -88,10 +103,10 @@ export class BookmarkBlockComponent extends CaptionedBlockComponent<BookmarkBloc
         };
       })
       .catch(() => {
-        this.error = true;
+        if (isCurrent()) this.error = true;
       })
       .finally(() => {
-        this.loading = false;
+        if (this._fetchAbortController === controller) this.loading = false;
       });
   };
 
@@ -113,10 +128,16 @@ export class BookmarkBlockComponent extends CaptionedBlockComponent<BookmarkBloc
     window.open(link, '_blank', 'noopener,noreferrer');
   };
 
-  refreshData = () => {
-    refreshBookmarkUrlData(this, this._fetchAbortController?.signal).catch(
-      console.error
-    );
+  refreshData = (resetMissing = false) => {
+    if (this.store.readonly) {
+      this._updateLocalLinkPreview();
+      return;
+    }
+    this._fetchAbortController?.abort();
+    this._fetchAbortController = new AbortController();
+    refreshBookmarkUrlData(this, this._fetchAbortController.signal, {
+      resetMissing,
+    }).catch(console.error);
   };
 
   get citationService() {
@@ -218,6 +239,7 @@ export class BookmarkBlockComponent extends CaptionedBlockComponent<BookmarkBloc
     });
 
     this._fetchAbortController = new AbortController();
+    this._observedUrl = this.model.props.url;
 
     this.contentEditable = 'false';
 
@@ -237,8 +259,9 @@ export class BookmarkBlockComponent extends CaptionedBlockComponent<BookmarkBloc
 
     this.disposables.add(
       this.model.propsUpdated.subscribe(({ key }) => {
-        if (key === 'url') {
-          this.refreshData();
+        if (key === 'url' && this.model.props.url !== this._observedUrl) {
+          this._observedUrl = this.model.props.url;
+          this.refreshData(true);
         }
       })
     );
