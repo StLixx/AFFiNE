@@ -69,6 +69,18 @@ const styles = css`
 
 export const AFFINE_FRAME_PREVIEW = 'frame-preview';
 
+// A preview scope is disposable, never parked for reuse. Native host disconnect
+// and an early cancellation before first connection share one release owner.
+export class FramePreviewScope extends BlockStdScope {
+  private released = false;
+
+  override unmount() {
+    if (this.released) return;
+    this.released = true;
+    super.unmount();
+  }
+}
+
 export class FramePreview extends WithDisposable(ShadowlessElement) {
   static override styles = styles;
 
@@ -91,7 +103,7 @@ export class FramePreview extends WithDisposable(ShadowlessElement) {
 
   private _previewDoc: Store | null = null;
 
-  private _previewScope: BlockStdScope | null = null;
+  private _previewScope: FramePreviewScope | null = null;
 
   private _previewHost: EditorHost | null = null;
 
@@ -273,9 +285,18 @@ export class FramePreview extends WithDisposable(ShadowlessElement) {
   private _releasePreview() {
     this._cancelPreview?.();
     this._cancelPreview = null;
-    // EditorHost.disconnectedCallback invokes the native std.unmount chain,
-    // including local decoration leases, before this scope is dropped.
+    // Pending image requests otherwise retain detached bookmark DOM, its std
+    // scope and the old panel through native browser pending-activity roots.
+    // This host is permanently discarded; active or parked editors are untouched.
+    for (const image of this._previewHost?.querySelectorAll('img') ?? []) {
+      image.removeAttribute('srcset');
+      image.removeAttribute('src');
+    }
+    // Connected hosts invoke the native unmount chain on removal. Also release
+    // constructor-owned resources if cancellation happened before first connect.
+    // FramePreviewScope makes these two paths one idempotent release.
     this._previewHost?.remove();
+    this._previewScope?.unmount();
     this._previewHost = null;
     this._previewScope = null;
     this._previewDoc = null;
@@ -291,17 +312,19 @@ export class FramePreview extends WithDisposable(ShadowlessElement) {
         this._initSpec();
         this._initPreviewDoc();
         if (!this._previewDoc) return;
-        this._previewScope = new BlockStdScope({
+        this._previewScope = new FramePreviewScope({
           store: this._previewDoc,
           extensions: this._previewSpec.concat(this._runtimePreviewExt),
         });
         this._previewHost = this._previewScope.render();
-        const host = this._previewHost;
         this.requestUpdate();
         await this.updateComplete;
         if (signal.aborted || !this.isConnected) return;
-        await host.updateComplete;
-        if (!signal.aborted && this.isConnected) this._refreshViewport();
+        // The lane owns construction and our DOM commit. EditorHost's completion
+        // recursively awaits every descendant; keeping that unrelated async work
+        // in this lane starves other already-visible cards. Native Lit updates and
+        // the size watcher finish their rendering without owning this lane.
+        this._refreshViewport();
       } catch (error) {
         if (!signal.aborted) this._releasePreview();
         throw error;
