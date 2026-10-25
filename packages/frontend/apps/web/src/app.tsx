@@ -13,7 +13,10 @@ import { configureBrowserWorkbenchModule } from '@affine/core/modules/workbench'
 import { configureBrowserWorkspaceFlavours } from '@affine/core/modules/workspace-engine';
 import createEmotionCache from '@affine/core/utils/create-emotion-cache';
 import { getWorkerUrl } from '@affine/env/worker';
-import { StoreManagerClient } from '@affine/nbstore/worker/client';
+import {
+  bindStoreManagerPageLifecycle,
+  StoreManagerClient,
+} from '@affine/nbstore/worker/client';
 import { setTelemetryTransport } from '@affine/track';
 import { CacheProvider } from '@emotion/react';
 import { Framework, FrameworkRoot, getCurrentStore } from '@toeverything/infra';
@@ -40,9 +43,7 @@ if (
   storeManagerClient = new StoreManagerClient(new OpClient(worker));
 }
 setTelemetryTransport(storeManagerClient.telemetry);
-window.addEventListener('beforeunload', () => {
-  storeManagerClient.dispose();
-});
+bindStoreManagerPageLifecycle(window, storeManagerClient);
 window.addEventListener('focus', () => {
   storeManagerClient.resume();
 });

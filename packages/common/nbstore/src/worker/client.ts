@@ -48,6 +48,7 @@ import type {
 import type { StoreInitOptions, WorkerManagerOps, WorkerOps } from './ops';
 
 export type { StoreInitOptions as WorkerInitOptions } from './ops';
+export { bindStoreManagerPageLifecycle } from './page-lifecycle';
 
 type RealtimeWorkerClient = {
   call<Op extends RealtimeRequestName>(
@@ -126,6 +127,13 @@ export class StoreManagerClient {
     this.connections.set(closeKey, connection);
 
     return connection;
+  }
+
+  get hasPendingLocalUpdates() {
+    for (const { store } of this.connections.values()) {
+      if (store.docFrontend.hasPendingLocalUpdates) return true;
+    }
+    return false;
   }
 
   dispose() {

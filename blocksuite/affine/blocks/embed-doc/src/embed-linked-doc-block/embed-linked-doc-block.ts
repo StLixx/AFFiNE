@@ -107,7 +107,7 @@ export class EmbedLinkedDocBlockComponent extends EmbedBlockComponent<EmbedLinke
     this._loading = false;
 
     // If it is a link to a block or element, the content will not be rendered.
-    if (this._referenceToNode) {
+    if (this._referenceToNode && !this.model.props.referenceContent) {
       return;
     }
 

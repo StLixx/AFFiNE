@@ -13,6 +13,7 @@ import {
   type BoxSelectionContext,
   GfxElementModelView,
   GfxViewInteractionExtension,
+  leaseReadonlyLocalElement,
 } from '@blocksuite/std/gfx';
 
 import { handleLayout } from './utils.js';
@@ -21,6 +22,18 @@ export class MindMapView extends GfxElementModelView<MindmapElementModel> {
   static override type = 'mindmap';
 
   private readonly _collapseButtons = new Map<string, LocalShapeElementModel>();
+
+  private readonly _buttonLeases = new Map<string, () => void>();
+
+  private _deleteCollapseButton(button: LocalShapeElementModel) {
+    const release = this._buttonLeases.get(button.id);
+    if (release) {
+      release();
+      this._buttonLeases.delete(button.id);
+    } else {
+      this.surface.deleteLocalElement(button);
+    }
+  }
 
   private _hoveredState = new Map<
     string,
@@ -56,7 +69,7 @@ export class MindMapView extends GfxElementModelView<MindmapElementModel> {
 
       this._collapseButtons.forEach(btn => {
         if (!visited.has(btn)) {
-          this.surface.deleteLocalElement(btn);
+          this._deleteCollapseButton(btn);
           this._collapseButtons.delete(btn.id);
           const hoveredId = btn.id.replace('collapse-btn-', '');
 
@@ -210,9 +223,19 @@ export class MindMapView extends GfxElementModelView<MindmapElementModel> {
 
     const id = `collapse-btn-${node.id}`;
     const alreadyCreated = this._collapseButtons.has(id);
+    const lease =
+      !alreadyCreated && this.std.store.readonly
+        ? leaseReadonlyLocalElement(
+            this.surface,
+            id,
+            () => new LocalShapeElementModel(this.model.surface)
+          )
+        : null;
     const collapseButton =
       this._collapseButtons.get(id) ||
+      lease?.model ||
       new LocalShapeElementModel(this.model.surface);
+    if (lease) this._buttonLeases.set(id, lease.release);
     const collapsed = node.detail.collapsed ?? false;
 
     if (
@@ -256,7 +279,7 @@ export class MindMapView extends GfxElementModelView<MindmapElementModel> {
       collapseButton.opacity = !node.element.hidden && collapsed ? 1 : 0;
 
       this._collapseButtons.set(id, collapseButton);
-      this.surface.addLocalElement(collapseButton);
+      if (!lease || lease.created) this.surface.addLocalElement(collapseButton);
 
       const hoveredState = {
         button: false,
@@ -350,8 +373,10 @@ export class MindMapView extends GfxElementModelView<MindmapElementModel> {
   override onDestroyed() {
     super.onDestroyed();
     this._collapseButtons.forEach(btn => {
-      this.surface.deleteLocalElement(btn);
+      this._deleteCollapseButton(btn);
     });
+    this._collapseButtons.clear();
+    this._hoveredState.clear();
   }
 }
 
