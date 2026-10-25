@@ -47,6 +47,7 @@ export class IndexedDBDocStorage extends DocStorageBase<IDBConnectionOptions> {
         await trx.objectStore('clocks').put({ docId: update.docId, timestamp });
 
         trx.commit();
+        await trx.done;
       } catch (e) {
         if (e instanceof Error && e.name === 'ConstraintError') {
           retry++;

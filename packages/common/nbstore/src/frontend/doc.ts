@@ -34,11 +34,14 @@ type Job =
   | {
       type: 'load';
       docId: string;
+      initialUpdate: Uint8Array;
+      localChange?: true;
     }
   | {
       type: 'save';
       docId: string;
       update: Uint8Array;
+      localChange?: true;
     }
   | {
       type: 'apply';
@@ -127,6 +130,17 @@ export class DocFrontend {
   };
 
   private readonly statusUpdatedSubject$ = new Subject<string>();
+
+  /** Local edits are pending until storage acknowledges the actual local transaction. */
+  get hasPendingLocalUpdates() {
+    const localWrite = (job: Job) =>
+      job.type !== 'apply' && job.localChange === true;
+    if (this.status.currentJob?.jobs.some(localWrite)) return true;
+    for (const jobs of this.status.jobMap.values()) {
+      if (jobs.some(localWrite)) return true;
+    }
+    return false;
+  }
 
   private readonly abort = new AbortController();
 
@@ -299,13 +313,12 @@ export class DocFrontend {
       if (!doc) {
         return;
       }
-      const existingData = encodeStateAsUpdate(doc);
-
-      if (!isEmptyUpdate(existingData)) {
+      if (job.localChange) {
         this.schedule({
           type: 'save',
           docId: doc.guid,
-          update: existingData,
+          update: job.initialUpdate,
+          localChange: true,
         });
       }
 
@@ -409,9 +422,12 @@ export class DocFrontend {
     if (this.status.docs.has(doc.guid)) {
       throw new Error('doc already connected');
     }
+    const initialUpdate = encodeStateAsUpdate(doc);
     this.schedule({
       type: 'load',
       docId: doc.guid,
+      initialUpdate,
+      localChange: !isEmptyUpdate(initialUpdate) || undefined,
     });
 
     this.status.docs.set(doc.guid, doc);
@@ -483,6 +499,7 @@ ${changedList}
       type: 'save',
       docId: doc.guid,
       update,
+      localChange: true,
     });
   };
 
