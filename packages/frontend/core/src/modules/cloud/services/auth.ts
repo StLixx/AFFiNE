@@ -6,10 +6,11 @@ import { nanoid } from 'nanoid';
 import { distinctUntilChanged, map, skip, type Subscription } from 'rxjs';
 
 import type { GlobalDialogService } from '../../dialogs';
+import type { GlobalContextService } from '../../global-context';
 import { ApplicationFocused } from '../../lifecycle';
 import type { NbstoreService } from '../../storage';
 import type { UrlService } from '../../url';
-import { AuthSession } from '../entities/session';
+import { type AuthAccountInfo, AuthSession } from '../entities/session';
 import { AccountChanged } from '../events/account-changed';
 import { AccountLoggedIn } from '../events/account-logged-in';
 import { AccountLoggedOut } from '../events/account-logged-out';
@@ -46,6 +47,8 @@ function csrfHeader(): Record<string, string> {
 export class AuthService extends Service {
   session = this.framework.createEntity(AuthSession);
   private profileSubscription?: Subscription;
+  private readonly accountSubscription: Subscription;
+  private accountGeneration = 0;
 
   constructor(
     private readonly fetchService: FetchService,
@@ -53,11 +56,12 @@ export class AuthService extends Service {
     private readonly urlService: UrlService,
     private readonly dialogService: GlobalDialogService,
     private readonly nbstoreService: NbstoreService,
-    private readonly serverService: ServerService
+    private readonly serverService: ServerService,
+    private readonly globalContextService: GlobalContextService
   ) {
     super();
 
-    this.session.account$
+    this.accountSubscription = this.session.account$
       .pipe(
         map(a => ({
           id: a?.id,
@@ -67,23 +71,62 @@ export class AuthService extends Service {
         skip(1) // skip the initial value
       )
       .subscribe(({ account }) => {
-        if (account === null) {
-          this.eventBus.emit(AccountLoggedOut, account);
-          this.profileSubscription?.unsubscribe();
-          this.profileSubscription = undefined;
-        } else {
-          this.eventBus.emit(AccountLoggedIn, account);
-          this.subscribeProfile();
-        }
-        this.eventBus.emit(AccountChanged, account);
+        void this.publishAccountChange(account).catch(error => {
+          console.error('Failed to prepare realtime account identity', error);
+        });
       });
 
-    this.subscribeProfile();
+    this.refreshProfileIdentity();
+  }
+
+  private async prepareRealtimeIdentity(account: AuthAccountInfo | null) {
+    const server = this.serverService.server;
+    if (
+      this.globalContextService.globalContext.serverId.$.value !== server.id
+    ) {
+      return;
+    }
+    // Account lifecycle consumers create requests and subscriptions immediately.
+    // Wait for the worker identity reset before publishing the new account.
+    await this.nbstoreService.realtime.configure({
+      endpoint: server.baseUrl,
+      authenticated: !!account,
+      userId: account?.id,
+      isSelfHosted:
+        server.config$.value.type === ServerDeploymentType.Selfhosted,
+    });
+  }
+
+  private async publishAccountChange(account: AuthAccountInfo | null) {
+    const generation = ++this.accountGeneration;
+    this.profileSubscription?.unsubscribe();
+    this.profileSubscription = undefined;
+    await this.prepareRealtimeIdentity(account);
+    if (generation !== this.accountGeneration) return;
+    if (account === null) {
+      this.eventBus.emit(AccountLoggedOut, account);
+    } else {
+      this.eventBus.emit(AccountLoggedIn, account);
+      this.subscribeProfile();
+    }
+    this.eventBus.emit(AccountChanged, account);
+  }
+
+  private refreshProfileIdentity() {
+    const generation = this.accountGeneration;
+    const account = this.session.account$.value;
+    void this.prepareRealtimeIdentity(account)
+      .then(() => {
+        if (generation === this.accountGeneration) this.subscribeProfile();
+      })
+      .catch(error => {
+        console.error('Failed to prepare realtime profile identity', error);
+      });
   }
 
   private onServerStarted() {
     this.session.revalidate();
-    this.subscribeProfile();
+    this.refreshProfileIdentity();
   }
 
   private onApplicationFocused() {
@@ -112,6 +155,8 @@ export class AuthService extends Service {
 
   override dispose() {
     super.dispose();
+    this.accountGeneration++;
+    this.accountSubscription?.unsubscribe();
     this.profileSubscription?.unsubscribe();
     this.profileSubscription = undefined;
   }

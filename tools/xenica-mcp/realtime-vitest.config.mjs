@@ -18,6 +18,7 @@ export default defineConfig({
       'packages/common/nbstore/src/realtime/__tests__/*.spec.ts',
       'tools/xenica-mcp/auth-guard-cache.spec.ts',
       'tools/xenica-mcp/socket-identity.spec.ts',
+      'tools/xenica-mcp/auth-identity-order.spec.ts',
     ],
     maxWorkers: 1,
   },

@@ -151,6 +151,7 @@ export function configureCloudModule(framework: Framework) {
       GlobalDialogService,
       NbstoreService,
       ServerService,
+      GlobalContextService,
     ])
     .store(AuthStore, [
       FetchService,
