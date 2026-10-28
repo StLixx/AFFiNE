@@ -35,7 +35,9 @@ describe('Async Priority Queue abort listener lifetime', () => {
     const controller = new AbortController();
     const reason = new Error('already cancelled');
     controller.abort(reason);
-    await expect(queue.asyncPop(undefined, controller.signal)).rejects.toBe(reason);
+    await expect(queue.asyncPop(undefined, controller.signal)).rejects.toBe(
+      reason
+    );
     expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
   });
 
@@ -47,7 +49,9 @@ describe('Async Priority Queue abort listener lifetime', () => {
     const lowResult = queue.asyncPop(undefined, low.signal);
     queue.push('low-priority', 1);
     expect(await lowResult).toBe('low-priority');
-    await expect.poll(() => getEventListeners(high.signal, 'abort').length).toBe(1);
+    await expect
+      .poll(() => getEventListeners(high.signal, 'abort').length)
+      .toBe(1);
     expect(getEventListeners(low.signal, 'abort')).toHaveLength(0);
     queue.push('high-priority', 5);
     expect(await highResult).toBe('high-priority');
