@@ -19,6 +19,7 @@ export default defineConfig({
       'tools/xenica-mcp/auth-guard-cache.spec.ts',
       'tools/xenica-mcp/socket-identity.spec.ts',
       'tools/xenica-mcp/auth-identity-order.spec.ts',
+      'tools/xenica-mcp/subscription-replacement.spec.ts',
     ],
     maxWorkers: 1,
   },
