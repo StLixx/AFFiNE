@@ -86,6 +86,7 @@ export class RealtimeService extends Service {
       .map(([server, account, selfHosted]) => ({
         endpoint: server?.baseUrl ?? '',
         authenticated: !!account,
+        userId: account?.id,
         isSelfHosted: !!selfHosted,
       }))
       .distinctUntilChanged(shallowEqual);
@@ -118,6 +119,7 @@ export class RealtimeService extends Service {
     context: {
       endpoint: string;
       authenticated: boolean;
+      userId?: string;
       isSelfHosted: boolean;
     },
     generation: number,

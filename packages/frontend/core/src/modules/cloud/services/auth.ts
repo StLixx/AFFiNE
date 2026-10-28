@@ -6,10 +6,11 @@ import { nanoid } from 'nanoid';
 import { distinctUntilChanged, map, skip, type Subscription } from 'rxjs';
 
 import type { GlobalDialogService } from '../../dialogs';
+import type { GlobalContextService } from '../../global-context';
 import { ApplicationFocused } from '../../lifecycle';
 import type { NbstoreService } from '../../storage';
 import type { UrlService } from '../../url';
-import { AuthSession } from '../entities/session';
+import { type AuthAccountInfo, AuthSession } from '../entities/session';
 import { AccountChanged } from '../events/account-changed';
 import { AccountLoggedIn } from '../events/account-logged-in';
 import { AccountLoggedOut } from '../events/account-logged-out';
@@ -46,6 +47,9 @@ function csrfHeader(): Record<string, string> {
 export class AuthService extends Service {
   session = this.framework.createEntity(AuthSession);
   private profileSubscription?: Subscription;
+  private readonly accountSubscription: Subscription;
+  private readonly serverSubscription: Subscription;
+  private accountGeneration = 0;
 
   constructor(
     private readonly fetchService: FetchService,
@@ -53,11 +57,12 @@ export class AuthService extends Service {
     private readonly urlService: UrlService,
     private readonly dialogService: GlobalDialogService,
     private readonly nbstoreService: NbstoreService,
-    private readonly serverService: ServerService
+    private readonly serverService: ServerService,
+    private readonly globalContextService: GlobalContextService
   ) {
     super();
 
-    this.session.account$
+    this.accountSubscription = this.session.account$
       .pipe(
         map(a => ({
           id: a?.id,
@@ -67,23 +72,78 @@ export class AuthService extends Service {
         skip(1) // skip the initial value
       )
       .subscribe(({ account }) => {
-        if (account === null) {
-          this.eventBus.emit(AccountLoggedOut, account);
-          this.profileSubscription?.unsubscribe();
-          this.profileSubscription = undefined;
-        } else {
-          this.eventBus.emit(AccountLoggedIn, account);
-          this.subscribeProfile();
-        }
-        this.eventBus.emit(AccountChanged, account);
+        void this.publishAccountChange(account).catch(error => {
+          console.error('Failed to prepare realtime account identity', error);
+        });
       });
 
-    this.subscribeProfile();
+    this.serverSubscription =
+      this.globalContextService.globalContext.serverId.$.subscribe(() => {
+        if (this.isCurrentServer()) {
+          this.refreshProfileIdentity();
+        } else {
+          this.profileSubscription?.unsubscribe();
+          this.profileSubscription = undefined;
+        }
+      });
+  }
+
+  private async prepareRealtimeIdentity(account: AuthAccountInfo | null) {
+    const server = this.serverService.server;
+    if (
+      this.globalContextService.globalContext.serverId.$.value !== server.id
+    ) {
+      return;
+    }
+    // Account lifecycle consumers create requests and subscriptions immediately.
+    // Wait for the worker identity reset before publishing the new account.
+    await this.nbstoreService.realtime.configure({
+      endpoint: server.baseUrl,
+      authenticated: !!account,
+      userId: account?.id,
+      isSelfHosted:
+        server.config$.value.type === ServerDeploymentType.Selfhosted,
+    });
+  }
+
+  private async publishAccountChange(account: AuthAccountInfo | null) {
+    const generation = ++this.accountGeneration;
+    this.profileSubscription?.unsubscribe();
+    this.profileSubscription = undefined;
+    await this.prepareRealtimeIdentity(account);
+    if (generation !== this.accountGeneration) return;
+    if (account === null) {
+      this.eventBus.emit(AccountLoggedOut, account);
+    } else {
+      this.eventBus.emit(AccountLoggedIn, account);
+      this.subscribeProfile();
+    }
+    this.eventBus.emit(AccountChanged, account);
+  }
+
+  private isCurrentServer() {
+    return (
+      this.globalContextService.globalContext.serverId.$.value ===
+      this.serverService.server.id
+    );
+  }
+
+  private refreshProfileIdentity() {
+    if (!this.isCurrentServer()) return;
+    const generation = this.accountGeneration;
+    const account = this.session.account$.value;
+    void this.prepareRealtimeIdentity(account)
+      .then(() => {
+        if (generation === this.accountGeneration) this.subscribeProfile();
+      })
+      .catch(error => {
+        console.error('Failed to prepare realtime profile identity', error);
+      });
   }
 
   private onServerStarted() {
     this.session.revalidate();
-    this.subscribeProfile();
+    this.refreshProfileIdentity();
   }
 
   private onApplicationFocused() {
@@ -93,7 +153,9 @@ export class AuthService extends Service {
   private subscribeProfile() {
     this.profileSubscription?.unsubscribe();
     this.profileSubscription = undefined;
-    if (!this.session.account$.value) return;
+    if (!this.isCurrentServer() || !this.session.account$.value) return;
+    const accountId = this.session.account$.value.id;
+    const generation = this.accountGeneration;
     this.profileSubscription = this.nbstoreService.realtime
       .subscribe('user.profile.changed', {})
       .subscribe({
@@ -104,14 +166,37 @@ export class AuthService extends Service {
             this.eventBus.emit(AccountChanged, this.session.account$.value);
           })().catch(() => {});
         },
-        error: () => {
+        error: error => {
           this.profileSubscription = undefined;
+          console.debug(
+            'Realtime profile subscription interrupted',
+            error?.name
+          );
+          if (
+            error?.name === 'RealtimeIdentityChanged' ||
+            error?.name === 'RealtimeUnauthenticated'
+          ) {
+            // A startup context can reset while this subscribe is in flight.
+            // Retry only for the still-current account, never revive an old one.
+            queueMicrotask(() => {
+              if (
+                generation === this.accountGeneration &&
+                this.session.account$.value?.id === accountId &&
+                this.isCurrentServer()
+              ) {
+                this.refreshProfileIdentity();
+              }
+            });
+          }
         },
       });
   }
 
   override dispose() {
     super.dispose();
+    this.accountGeneration++;
+    this.accountSubscription.unsubscribe();
+    this.serverSubscription.unsubscribe();
     this.profileSubscription?.unsubscribe();
     this.profileSubscription = undefined;
   }

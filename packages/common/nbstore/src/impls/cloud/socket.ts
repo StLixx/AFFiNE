@@ -200,8 +200,9 @@ class SocketManager {
   private readonly socketIOManager: SocketIOManager;
   socket: Socket;
   refCount = 0;
+  retired = false;
 
-  constructor(endpoint: string, isSelfHosted: boolean) {
+  constructor(endpoint: string, isSelfHosted: boolean, userId?: string) {
     this.socketIOManager = new SocketIOManager(endpoint, {
       autoConnect: false,
       transports: isSelfHosted ? ['polling', 'websocket'] : ['websocket'], // self-hosted server may not support websocket
@@ -211,16 +212,23 @@ class SocketManager {
     });
     this.socket = this.socketIOManager.socket('/', {
       auth(cb) {
+        const finish = (data: object) =>
+          cb(userId ? { ...data, userId } : data);
         if (authMethod) {
-          authMethod(endpoint, cb);
+          authMethod(endpoint, finish);
         } else {
-          cb({});
+          finish({});
         }
       },
     });
   }
 
   connect() {
+    if (this.retired) {
+      const error = new Error('Socket account identity changed');
+      error.name = 'RealtimeIdentityChanged';
+      throw error;
+    }
     let disconnected = false;
     this.refCount++;
     this.socket.connect();
@@ -240,11 +248,13 @@ class SocketManager {
   }
 
   reset() {
+    this.retired = true;
     this.socket.disconnect();
   }
 }
 
 const SOCKET_MANAGER_CACHE = new Map<string, SocketManager>();
+const SOCKET_IDENTITY_CACHE = new Map<string, string | undefined>();
 function getSocketManagerKey(endpoint: string, isSelfHosted: boolean) {
   return `${endpoint}:${isSelfHosted ? 'selfhosted' : 'cloud'}`;
 }
@@ -253,7 +263,11 @@ function getSocketManager(endpoint: string, isSelfHosted: boolean) {
   const key = getSocketManagerKey(endpoint, isSelfHosted);
   let manager = SOCKET_MANAGER_CACHE.get(key);
   if (!manager) {
-    manager = new SocketManager(endpoint, isSelfHosted);
+    manager = new SocketManager(
+      endpoint,
+      isSelfHosted,
+      SOCKET_IDENTITY_CACHE.get(key)
+    );
     SOCKET_MANAGER_CACHE.set(key, manager);
   }
   return manager;
@@ -263,10 +277,22 @@ export class SocketConnection extends AutoReconnectConnection<{
   socket: Socket;
   disconnect: () => void;
 }> {
+  static setIdentity(endpoint: string, isSelfHosted: boolean, userId?: string) {
+    const key = getSocketManagerKey(endpoint, isSelfHosted);
+    if (
+      !SOCKET_IDENTITY_CACHE.has(key) ||
+      SOCKET_IDENTITY_CACHE.get(key) !== userId
+    ) {
+      SOCKET_IDENTITY_CACHE.set(key, userId);
+      SocketConnection.resetSharedConnection(endpoint, isSelfHosted);
+    }
+  }
+
   static resetSharedConnection(endpoint: string, isSelfHosted: boolean) {
-    SOCKET_MANAGER_CACHE.get(
-      getSocketManagerKey(endpoint, isSelfHosted)
-    )?.reset();
+    const key = getSocketManagerKey(endpoint, isSelfHosted);
+    const previous = SOCKET_MANAGER_CACHE.get(key);
+    SOCKET_MANAGER_CACHE.delete(key);
+    previous?.reset();
   }
 
   manager = getSocketManager(this.endpoint, this.isSelfHosted);
@@ -279,6 +305,9 @@ export class SocketConnection extends AutoReconnectConnection<{
   }
 
   override async doConnect(signal?: AbortSignal) {
+    if (this.manager.retired) {
+      this.manager = getSocketManager(this.endpoint, this.isSelfHosted);
+    }
     const { socket, disconnect } = this.manager.connect();
     try {
       throwIfAborted(signal);
@@ -320,6 +349,12 @@ export class SocketConnection extends AutoReconnectConnection<{
   }
 
   handleDisconnect = (reason: SocketIO.DisconnectReason) => {
+    if (this.manager.retired) {
+      // Stop old stores without deleting their pending updates. Only an explicit
+      // reconnect/reopen may attach them to a newly authenticated manager.
+      this.disconnect(true);
+      return;
+    }
     this.error = new Error(reason);
   };
 }
