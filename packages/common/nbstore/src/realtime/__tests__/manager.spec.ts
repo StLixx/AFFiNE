@@ -422,3 +422,62 @@ test('failed reconnect only errors the affected subscription', async () => {
   firstSubscription.unsubscribe();
   secondSubscription.unsubscribe();
 });
+
+test('changing signed-in account resets the shared authenticated socket', () => {
+  const manager = new RealtimeManager();
+  manager.setContext({
+    endpoint: 'http://server', isSelfHosted: false, authenticated: true,
+    userId: 'account-a',
+  });
+  manager.setContext({
+    endpoint: 'http://server', isSelfHosted: false, authenticated: true,
+    userId: 'account-b',
+  });
+  expect(resetSharedConnection).toHaveBeenCalledWith('http://server', false);
+  resetSharedConnection.mockClear();
+  manager.setContext({
+    endpoint: 'http://server', isSelfHosted: false, authenticated: true,
+    userId: 'account-b',
+  });
+  expect(resetSharedConnection).not.toHaveBeenCalled();
+});
+
+test('account switch retires old subscriptions instead of moving them to another user', async () => {
+  const manager = new RealtimeManager();
+  manager.setContext({
+    endpoint: 'http://server', isSelfHosted: false, authenticated: true,
+    userId: 'account-a',
+  });
+  const errors: unknown[] = [];
+  const subscription = manager.subscribe('notification.count.changed', {})
+    .subscribe({ error: error => errors.push(error) });
+  await vi.waitFor(() => expect(manager.getStatus().subscriptions).toBe(1));
+  manager.setContext({
+    endpoint: 'http://server', isSelfHosted: false, authenticated: true,
+    userId: 'account-b',
+  });
+  expect(errors).toHaveLength(1);
+  expect(manager.getStatus().subscriptions).toBe(0);
+  await manager.request('notification.count.get', {});
+  expect(socket.emitted.filter(item => item.event === 'realtime:subscribe')).toHaveLength(1);
+  subscription.unsubscribe();
+});
+
+test('account switch rejects an old in-flight reply', async () => {
+  const manager = new RealtimeManager();
+  manager.setContext({
+    endpoint: 'http://server', isSelfHosted: false, authenticated: true,
+    userId: 'account-a',
+  });
+  let resolveAck!: (value: unknown) => void;
+  socket.nextRequestAck = new Promise(resolve => { resolveAck = resolve; });
+  const pending = manager.request('notification.count.get', {});
+  const rejected = expect(pending).rejects.toMatchObject({ name: 'RealtimeIdentityChanged' });
+  await vi.waitFor(() => expect(socket.emitted).toHaveLength(1));
+  manager.setContext({
+    endpoint: 'http://server', isSelfHosted: false, authenticated: true,
+    userId: 'account-b',
+  });
+  resolveAck({ data: { count: 99 } });
+  await rejected;
+});
