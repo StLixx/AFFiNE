@@ -154,6 +154,8 @@ export class AuthService extends Service {
     this.profileSubscription?.unsubscribe();
     this.profileSubscription = undefined;
     if (!this.isCurrentServer() || !this.session.account$.value) return;
+    const accountId = this.session.account$.value.id;
+    const generation = this.accountGeneration;
     this.profileSubscription = this.nbstoreService.realtime
       .subscribe('user.profile.changed', {})
       .subscribe({
@@ -164,8 +166,28 @@ export class AuthService extends Service {
             this.eventBus.emit(AccountChanged, this.session.account$.value);
           })().catch(() => {});
         },
-        error: () => {
+        error: error => {
           this.profileSubscription = undefined;
+          console.debug(
+            'Realtime profile subscription interrupted',
+            error?.name
+          );
+          if (
+            error?.name === 'RealtimeIdentityChanged' ||
+            error?.name === 'RealtimeUnauthenticated'
+          ) {
+            // A startup context can reset while this subscribe is in flight.
+            // Retry only for the still-current account, never revive an old one.
+            queueMicrotask(() => {
+              if (
+                generation === this.accountGeneration &&
+                this.session.account$.value?.id === accountId &&
+                this.isCurrentServer()
+              ) {
+                this.refreshProfileIdentity();
+              }
+            });
+          }
         },
       });
   }

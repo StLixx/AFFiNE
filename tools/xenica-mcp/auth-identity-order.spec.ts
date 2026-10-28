@@ -1,4 +1,4 @@
-import { BehaviorSubject, of } from 'rxjs';
+import { BehaviorSubject, of, Subject } from 'rxjs';
 import { beforeEach, expect, test, vi } from 'vitest';
 import { AuthService } from '../../packages/frontend/core/src/modules/cloud/services/auth';
 
@@ -134,3 +134,27 @@ test('cached account waits until its server becomes active before subscribing af
   expect(f.subscribe).toHaveBeenCalledOnce();
   f.service.dispose();
 });
+
+test.each(['RealtimeIdentityChanged', 'RealtimeUnauthenticated'])(
+  'current profile recovers from transient startup state %s',
+  async errorName => {
+    const f = fixture();
+    await flush();
+    const profile = new Subject<any>();
+    f.subscribe.mockReturnValueOnce(profile as any);
+    f.account$.next({ id: 'account-b' });
+    f.pending[0]();
+    await flush();
+    profile.error(
+      Object.assign(new Error('identity reset'), {
+        name: errorName,
+      })
+    );
+    await flush();
+    expect(f.pending).toHaveLength(2);
+    f.pending[1]();
+    await flush();
+    expect(f.subscribe).toHaveBeenCalledTimes(2);
+    f.service.dispose();
+  }
+);
