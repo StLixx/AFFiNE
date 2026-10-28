@@ -47,8 +47,9 @@ vi.mock(
 beforeEach(() => {
   state.bus = { emit: vi.fn() };
 });
-function fixture() {
-  const account$ = new BehaviorSubject<any>(null);
+function fixture(initialAccount: any = null, initialServerId: any = 'server') {
+  const serverId$ = new BehaviorSubject<any>(initialServerId);
+  const account$ = new BehaviorSubject<any>(initialAccount);
   state.framework = { createEntity: () => ({ account$ }) };
   const pending: (() => void)[] = [];
   const configure = vi.fn((context: any) =>
@@ -68,9 +69,9 @@ function fixture() {
         config$: { value: { type: 'selfhosted' } },
       },
     },
-    { globalContext: { serverId: { $: { value: 'server' } } } }
+    { globalContext: { serverId: { $: serverId$ } } }
   );
-  return { account$, service, configure, subscribe, pending };
+  return { account$, service, configure, subscribe, pending, serverId$ };
 }
 const flush = async () => {
   await Promise.resolve();
@@ -113,5 +114,23 @@ test('late account A acknowledgement cannot publish lifecycle or subscribe after
     ['changed', { id: 'account-b' }],
   ]);
   expect(f.subscribe).toHaveBeenCalledTimes(1);
+  f.service.dispose();
+});
+
+test('cached account waits until its server becomes active before subscribing after startup', async () => {
+  const f = fixture({ id: 'account-b' }, null);
+  await flush();
+  expect(f.subscribe).not.toHaveBeenCalled();
+  expect(f.configure).not.toHaveBeenCalled();
+  f.serverId$.next('server');
+  expect(f.configure).toHaveBeenLastCalledWith({
+    endpoint: 'https://example.com',
+    authenticated: true,
+    userId: 'account-b',
+    isSelfHosted: true,
+  });
+  f.pending.shift()!();
+  await flush();
+  expect(f.subscribe).toHaveBeenCalledOnce();
   f.service.dispose();
 });

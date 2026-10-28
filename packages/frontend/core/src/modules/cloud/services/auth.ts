@@ -48,6 +48,7 @@ export class AuthService extends Service {
   session = this.framework.createEntity(AuthSession);
   private profileSubscription?: Subscription;
   private readonly accountSubscription: Subscription;
+  private readonly serverSubscription: Subscription;
   private accountGeneration = 0;
 
   constructor(
@@ -76,7 +77,15 @@ export class AuthService extends Service {
         });
       });
 
-    this.refreshProfileIdentity();
+    this.serverSubscription =
+      this.globalContextService.globalContext.serverId.$.subscribe(() => {
+        if (this.isCurrentServer()) {
+          this.refreshProfileIdentity();
+        } else {
+          this.profileSubscription?.unsubscribe();
+          this.profileSubscription = undefined;
+        }
+      });
   }
 
   private async prepareRealtimeIdentity(account: AuthAccountInfo | null) {
@@ -112,7 +121,15 @@ export class AuthService extends Service {
     this.eventBus.emit(AccountChanged, account);
   }
 
+  private isCurrentServer() {
+    return (
+      this.globalContextService.globalContext.serverId.$.value ===
+      this.serverService.server.id
+    );
+  }
+
   private refreshProfileIdentity() {
+    if (!this.isCurrentServer()) return;
     const generation = this.accountGeneration;
     const account = this.session.account$.value;
     void this.prepareRealtimeIdentity(account)
@@ -136,7 +153,7 @@ export class AuthService extends Service {
   private subscribeProfile() {
     this.profileSubscription?.unsubscribe();
     this.profileSubscription = undefined;
-    if (!this.session.account$.value) return;
+    if (!this.isCurrentServer() || !this.session.account$.value) return;
     this.profileSubscription = this.nbstoreService.realtime
       .subscribe('user.profile.changed', {})
       .subscribe({
@@ -156,7 +173,8 @@ export class AuthService extends Service {
   override dispose() {
     super.dispose();
     this.accountGeneration++;
-    this.accountSubscription?.unsubscribe();
+    this.accountSubscription.unsubscribe();
+    this.serverSubscription.unsubscribe();
     this.profileSubscription?.unsubscribe();
     this.profileSubscription = undefined;
   }
