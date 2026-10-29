@@ -21,7 +21,8 @@ export class CommentViewExtension extends ViewExtensionProvider<CommentViewOptio
 
   override setup(context: ViewExtensionContext, options?: CommentViewOptions) {
     super.setup(context, options);
-    if (!options?.enableComment) return;
+    // Previews must not replace the workspace-wide interactive comment editor.
+    if (this.isPreview(context.scope) || !options?.enableComment) return;
 
     const framework = options.framework;
     if (!framework) return;

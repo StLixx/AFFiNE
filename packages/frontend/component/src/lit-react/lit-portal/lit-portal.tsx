@@ -1,7 +1,7 @@
 import { html, LitElement, type TemplateResult } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { nanoid } from 'nanoid';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
 
 type PortalEvent = {
@@ -89,7 +89,10 @@ export type ReactToLit = (
 
 // returns a factory function that renders a given element to a lit template
 export const useLitPortalFactory = () => {
-  const [portals, setPortals] = useState<LitPortal[]>([]);
+  // React keeps previous hook state in its alternate Fiber. Keep DOM owners in
+  // one mutable registry so disconnected portals are not retained by old state.
+  const portals = useRef<LitPortal[]>([]);
+  const [, refreshPortals] = useReducer((revision: number) => revision + 1, 0);
 
   const reactToLit: ReactToLit = useCallback(
     (elementOrFactory, rerendering) => {
@@ -98,44 +101,46 @@ export const useLitPortalFactory = () => {
           ? elementOrFactory()
           : elementOrFactory;
       return createLitPortalAnchor(event => {
-        setPortals(portals => {
-          const { name, target } = event;
-          const id = target.portalId;
-          let newPortals = portals;
-          const updatePortals = () => {
-            let oldPortalIndex = portals.findIndex(
-              p => p.litElement === target
-            );
-            oldPortalIndex =
-              oldPortalIndex === -1 ? portals.length : oldPortalIndex;
-            newPortals = portals.toSpliced(oldPortalIndex, 1, {
-              id,
-              portal: ReactDOM.createPortal(element, target),
-              litElement: target,
-            });
-          };
-          switch (name) {
-            case 'connectedCallback':
-              updatePortals();
+        const currentPortals = portals.current;
+        const { name, target } = event;
+        const id = target.portalId;
+        let newPortals = currentPortals;
+        const updatePortals = () => {
+          let oldPortalIndex = currentPortals.findIndex(
+            p => p.litElement === target
+          );
+          oldPortalIndex =
+            oldPortalIndex === -1 ? currentPortals.length : oldPortalIndex;
+          newPortals = currentPortals.toSpliced(oldPortalIndex, 1, {
+            id,
+            portal: ReactDOM.createPortal(element, target),
+            litElement: target,
+          });
+        };
+        switch (name) {
+          case 'connectedCallback':
+            updatePortals();
+            break;
+          case 'disconnectedCallback':
+            newPortals = currentPortals.filter(p => p.litElement.isConnected);
+            break;
+          case 'willUpdate':
+            if (!target.isConnected || !rerendering) {
               break;
-            case 'disconnectedCallback':
-              newPortals = portals.filter(p => p.litElement.isConnected);
-              break;
-            case 'willUpdate':
-              if (!target.isConnected || !rerendering) {
-                break;
-              }
-              updatePortals();
-              break;
-          }
-          return newPortals;
-        });
+            }
+            updatePortals();
+            break;
+        }
+        if (newPortals !== currentPortals) {
+          portals.current = newPortals;
+          refreshPortals();
+        }
       });
     },
     []
   );
 
-  return [reactToLit, portals] as const;
+  return [reactToLit, portals.current] as const;
 };
 
 // render a react element to a lit template
