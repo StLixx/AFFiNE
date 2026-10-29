@@ -38,6 +38,33 @@ function retainedByHookState(fiber: Fiber, target: HTMLElement) {
   return false;
 }
 
+// Parent React props can retain the previous rendered Portal even after hook
+// state is clean. Follow the actual Fiber owner graph, without walking DOM.
+function retainedByFiberGraph(root: unknown, target: HTMLElement) {
+  const seen = new Set<unknown>();
+  const visit = (value: unknown, depth = 0): boolean => {
+    if (value === target) return true;
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      seen.has(value) ||
+      value instanceof Node
+    )
+      return false;
+    if (depth > 30 || seen.size > 50000)
+      throw new Error('Fiber graph diagnostic bound exceeded');
+    seen.add(value);
+    if (value instanceof Map)
+      return [...value.values()].some(v => visit(v, depth + 1));
+    if (value instanceof Set)
+      return [...value.values()].some(v => visit(v, depth + 1));
+    return Object.values(Object.getOwnPropertyDescriptors(value)).some(
+      d => 'value' in d && visit(d.value, depth + 1)
+    );
+  };
+  return visit(root);
+}
+
 test('disconnect releases portal DOM from current and alternate hook state', async () => {
   let factory!: ReactToLit;
   const Probe = () => {
@@ -71,6 +98,7 @@ test('disconnect releases portal DOM from current and alternate hook state', asy
     fiberKey
   ].return;
   expect(retainedByHookState(fiber, target)).toBe(false);
+  expect(retainedByFiberGraph(fiber, target)).toBe(false);
 });
 
 test('connected siblings, updates and reconnection preserve native portal behavior', async () => {

@@ -1,7 +1,7 @@
 import { html, LitElement, type TemplateResult } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { nanoid } from 'nanoid';
-import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useMemo, useState, useSyncExternalStore } from 'react';
 import ReactDOM from 'react-dom';
 
 type PortalEvent = {
@@ -78,21 +78,88 @@ export type ElementOrFactory = React.ReactNode | (() => React.ReactNode);
 
 type LitPortal = {
   id: string;
+  portal: React.ReactNode;
+};
+
+type OwnedLitPortal = {
+  id: string;
   portal: React.ReactPortal;
   litElement: LitReactPortal;
 };
+
+// Only this live registry owns native containers. React snapshots and rendered
+// props contain primitive keys, so prior Fibers cannot park detached editors.
+class LitPortalRegistry {
+  private readonly entries = new Map<string, OwnedLitPortal>();
+  private readonly targetKeys = new WeakMap<LitReactPortal, string>();
+  private readonly listeners = new Set<() => void>();
+  private snapshot: readonly string[] = [];
+
+  subscribe = (listener: () => void) => {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  };
+
+  getSnapshot = () => this.snapshot;
+
+  private publish() {
+    this.snapshot = [...this.entries.keys()];
+    this.listeners.forEach(listener => listener());
+  }
+
+  upsert(target: LitReactPortal, element: React.ReactNode) {
+    const entryKey = this.targetKeys.get(target) ?? target.portalId;
+    this.targetKeys.set(target, entryKey);
+    this.entries.set(entryKey, {
+      id: target.portalId,
+      portal: ReactDOM.createPortal(element, target),
+      litElement: target,
+    });
+    this.publish();
+  }
+
+  prune() {
+    let changed = false;
+    for (const [key, entry] of this.entries) {
+      if (!entry.litElement.isConnected) {
+        this.entries.delete(key);
+        this.targetKeys.delete(entry.litElement);
+        changed = true;
+      }
+    }
+    if (changed) this.publish();
+  }
+
+  get(entryKey: string) {
+    return this.entries.get(entryKey);
+  }
+}
+
+function LitPortalRenderer({
+  registry,
+  entryKey,
+}: {
+  registry: LitPortalRegistry;
+  entryKey: string;
+}) {
+  return registry.get(entryKey)?.portal ?? null;
+}
 
 export type ReactToLit = (
   elementOrFactory: ElementOrFactory,
   rerendering?: boolean
 ) => TemplateResult;
 
-// returns a factory function that renders a given element to a lit template
+// The wrapper is a React component only; it adds no DOM around native content.
 export const useLitPortalFactory = () => {
-  // React keeps previous hook state in its alternate Fiber. Keep DOM owners in
-  // one mutable registry so disconnected portals are not retained by old state.
-  const portals = useRef<LitPortal[]>([]);
-  const [, refreshPortals] = useReducer((revision: number) => revision + 1, 0);
+  const registry = useMemo(() => new LitPortalRegistry(), []);
+  const keys = useSyncExternalStore(
+    registry.subscribe,
+    registry.getSnapshot,
+    registry.getSnapshot
+  );
 
   const reactToLit: ReactToLit = useCallback(
     (elementOrFactory, rerendering) => {
@@ -100,47 +167,38 @@ export const useLitPortalFactory = () => {
         typeof elementOrFactory === 'function'
           ? elementOrFactory()
           : elementOrFactory;
-      return createLitPortalAnchor(event => {
-        const currentPortals = portals.current;
-        const { name, target } = event;
-        const id = target.portalId;
-        let newPortals = currentPortals;
-        const updatePortals = () => {
-          let oldPortalIndex = currentPortals.findIndex(
-            p => p.litElement === target
-          );
-          oldPortalIndex =
-            oldPortalIndex === -1 ? currentPortals.length : oldPortalIndex;
-          newPortals = currentPortals.toSpliced(oldPortalIndex, 1, {
-            id,
-            portal: ReactDOM.createPortal(element, target),
-            litElement: target,
-          });
-        };
-        switch (name) {
-          case 'connectedCallback':
-            updatePortals();
-            break;
-          case 'disconnectedCallback':
-            newPortals = currentPortals.filter(p => p.litElement.isConnected);
-            break;
-          case 'willUpdate':
-            if (!target.isConnected || !rerendering) {
-              break;
-            }
-            updatePortals();
-            break;
-        }
-        if (newPortals !== currentPortals) {
-          portals.current = newPortals;
-          refreshPortals();
+      return createLitPortalAnchor(({ name, target }) => {
+        if (
+          name === 'connectedCallback' ||
+          (name === 'willUpdate' && target.isConnected && rerendering)
+        ) {
+          registry.upsert(target, element);
+        } else if (name === 'disconnectedCallback') {
+          registry.prune();
         }
       });
     },
-    []
+    [registry]
   );
 
-  return [reactToLit, portals.current] as const;
+  const portals: LitPortal[] = keys.flatMap(entryKey => {
+    const entry = registry.get(entryKey);
+    return entry
+      ? [
+          {
+            id: entry.id,
+            portal: (
+              <LitPortalRenderer
+                key={entry.id}
+                registry={registry}
+                entryKey={entryKey}
+              />
+            ),
+          },
+        ]
+      : [];
+  });
+  return [reactToLit, portals] as const;
 };
 
 // render a react element to a lit template
