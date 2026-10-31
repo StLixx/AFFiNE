@@ -5,17 +5,19 @@ import type {
   DocDisplayMetaParams,
 } from '@blocksuite/affine/shared/services';
 import { DocDisplayMetaProvider } from '@blocksuite/affine/shared/services';
-import {
-  createSignalFromObservable,
-  referenceToNode,
-} from '@blocksuite/affine/shared/utils';
-import { LifeCycleWatcher, StdIdentifier } from '@blocksuite/affine/std';
+import { referenceToNode } from '@blocksuite/affine/shared/utils';
+import { LifeCycleWatcher } from '@blocksuite/affine/std';
+import type { ExtensionType } from '@blocksuite/affine/store';
 import { LinkedPageIcon, PageIcon } from '@blocksuite/icons/lit';
 import { computed, type ReadonlySignal } from '@preact/signals-core';
 import { type FrameworkProvider } from '@toeverything/infra';
 import type { TemplateResult } from 'lit';
 
-export function buildDocDisplayMetaExtension(framework: FrameworkProvider) {
+import { ScopedObservableSignals } from '../scoped-observable-signals';
+
+export function buildDocDisplayMetaExtension(
+  framework: FrameworkProvider
+): ExtensionType {
   const docDisplayMetaService = framework.get(DocDisplayMetaService);
 
   function iconBuilder(
@@ -36,17 +38,15 @@ export function buildDocDisplayMetaExtension(framework: FrameworkProvider) {
   {
     static override key = 'doc-display-meta';
 
-    readonly disposables: (() => void)[] = [];
+    private readonly signals = new ScopedObservableSignals();
 
     static override setup(di: Container) {
       super.setup(di);
-      di.override(DocDisplayMetaProvider, this, [StdIdentifier]);
+      di.override(DocDisplayMetaProvider, provider => provider.get(this));
     }
 
     dispose() {
-      while (this.disposables.length > 0) {
-        this.disposables.pop()?.();
-      }
+      this.signals.unmount();
     }
 
     icon(
@@ -62,12 +62,10 @@ export function buildDocDisplayMetaExtension(framework: FrameworkProvider) {
         })
         .map(iconBuilder);
 
-      const { signal: iconSignal, cleanup } = createSignalFromObservable(
+      const iconSignal = this.signals.watch(
         icon$,
         iconBuilder(referenced ? LinkedPageIcon : PageIcon)
       );
-
-      this.disposables.push(cleanup);
 
       return computed(() => iconSignal.value);
     }
@@ -81,12 +79,13 @@ export function buildDocDisplayMetaExtension(framework: FrameworkProvider) {
         reference: referenced,
       });
 
-      const { signal: titleSignal, cleanup } =
-        createSignalFromObservable<string>(title$, title ?? '');
-
-      this.disposables.push(cleanup);
+      const titleSignal = this.signals.watch(title$, title ?? '');
 
       return computed(() => titleSignal.value);
+    }
+
+    override mounted() {
+      this.signals.mount();
     }
 
     override unmounted() {

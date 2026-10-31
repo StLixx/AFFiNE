@@ -35,7 +35,10 @@ export class SurfaceViewExtension extends ViewExtensionProvider {
       context.register(
         BlockViewExtension('affine:surface', literal`affine-surface`)
       );
-      context.register(EditPropsMiddlewareBuilder);
+      // A shared readonly preview model must not retain an editing scope.
+      if (!this.isPreview(context.scope)) {
+        context.register(EditPropsMiddlewareBuilder);
+      }
     } else {
       context.register(
         BlockViewExtension('affine:surface', literal`affine-surface-void`)

@@ -18,17 +18,26 @@ export class AsyncPriorityQueue extends PriorityQueue {
         });
       }
 
-      await Promise.race([
-        this._waitForUpdate,
-        new Promise((_, reject) => {
-          if (abort?.aborted) {
-            reject(abort?.reason);
-          }
-          abort?.addEventListener('abort', () => {
-            reject(abort.reason);
-          });
-        }),
-      ]);
+      let onAbort: (() => void) | undefined;
+      try {
+        await Promise.race([
+          this._waitForUpdate,
+          new Promise((_, reject) => {
+            if (abort?.aborted) {
+              reject(abort.reason);
+              return;
+            }
+            if (abort) {
+              onAbort = () => reject(abort.reason);
+              abort.addEventListener('abort', onAbort, { once: true });
+            }
+          }),
+        ]);
+      } finally {
+        if (onAbort) {
+          abort?.removeEventListener('abort', onAbort);
+        }
+      }
 
       return this.asyncPop(minimumPriority, abort);
     }
