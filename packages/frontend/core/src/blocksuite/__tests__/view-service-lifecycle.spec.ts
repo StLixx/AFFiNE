@@ -122,8 +122,10 @@ test('closing repeated preview scopes releases account and member subscriptions'
     scope.mount();
     f.account.data.next({ id: 'one', label: 'User One', avatar: 'avatar' });
     f.members.data.next([{ id: 'one', name: 'User One', avatarUrl: 'avatar' }]);
-    expect(scope.user.currentUserInfo$.value?.name).toBe('User One');
-    expect(scope.list.users$.value[0]?.avatar).toBe('avatar');
+    expect(scope.user.currentUserInfo$.value).toMatchObject({
+      name: 'User One',
+    });
+    expect(scope.list.users$.value[0]).toMatchObject({ avatar: 'avatar' });
     scope.close();
     scope.close();
     expect(f.account.active()).toBe(0);
@@ -146,11 +148,13 @@ test('disposing previews preserves the main editor shared services', () => {
       label: 'Still live',
       avatar: 'new-avatar',
     });
-    expect(main.user.currentUserInfo$.value?.name).toBe('Still live');
+    expect(main.user.currentUserInfo$.value).toMatchObject({
+      name: 'Still live',
+    });
     f.members.data.next([
       { id: 'one', name: 'Still live', avatarUrl: 'new-avatar' },
     ]);
-    expect(main.list.users$.value[0]?.avatar).toBe('new-avatar');
+    expect(main.list.users$.value[0]).toMatchObject({ avatar: 'new-avatar' });
   } finally {
     main.close();
   }
@@ -167,7 +171,7 @@ test('per-user signals release selectors and refresh after reconnect', () => {
   f.publicUsers.data.next(new Map([['one', { id: 'one', name: 'Before' }]]));
   f.loading.data.next(new Map([['one', true]]));
   f.errors.data.next(new Map([['one', new Error('synthetic')]]));
-  expect(user.value?.name).toBe('Before');
+  expect(user.value).toMatchObject({ name: 'Before' });
   expect(loading.value).toBe(true);
   expect(error.value).toBeTruthy();
   scope.close();
@@ -179,7 +183,7 @@ test('per-user signals release selectors and refresh after reconnect', () => {
   f.errors.data.next(new Map([['one', null]]));
   scope.mount();
   scope.mount();
-  expect(user.value?.name).toBe('After');
+  expect(user.value).toMatchObject({ name: 'After' });
   expect(loading.value).toBe(false);
   expect(error.value).toBe(null);
   expect(f.publicUsers.active()).toBe(1);
