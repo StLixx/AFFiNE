@@ -4,14 +4,13 @@ import {
   type ThemeExtension,
   ThemeExtensionIdentifier,
 } from '@blocksuite/affine/shared/services';
-import {
-  createSignalFromObservable,
-  type Signal,
-} from '@blocksuite/affine/shared/utils';
+import type { Signal } from '@blocksuite/affine/shared/utils';
 import { type BlockStdScope, LifeCycleWatcher } from '@blocksuite/affine/std';
 import type { Container } from '@blocksuite/global/di';
 import type { FrameworkProvider } from '@toeverything/infra';
 import type { Observable } from 'rxjs';
+
+import { ScopedObservableSignals } from '../scoped-observable-signals';
 
 export function getPreviewThemeExtension(framework: FrameworkProvider) {
   class AffinePagePreviewThemeExtension
@@ -21,6 +20,8 @@ export function getPreviewThemeExtension(framework: FrameworkProvider) {
     static override readonly key = 'affine-page-preview-theme';
 
     readonly theme: Signal<ColorScheme>;
+
+    private readonly signals = new ScopedObservableSignals();
 
     readonly disposables: (() => void)[] = [];
 
@@ -38,12 +39,7 @@ export function getPreviewThemeExtension(framework: FrameworkProvider) {
             ? ColorScheme.Dark
             : ColorScheme.Light;
         });
-      const { signal, cleanup } = createSignalFromObservable<ColorScheme>(
-        theme$,
-        ColorScheme.Light
-      );
-      this.theme = signal;
-      this.disposables.push(cleanup);
+      this.theme = this.signals.watch(theme$, ColorScheme.Light);
     }
 
     getAppTheme() {
@@ -54,11 +50,16 @@ export function getPreviewThemeExtension(framework: FrameworkProvider) {
       return this.theme;
     }
 
+    override mounted() {
+      this.signals.mount();
+    }
+
     override unmounted() {
       this.dispose();
     }
 
     dispose() {
+      this.signals.unmount();
       this.disposables.forEach(dispose => dispose());
     }
   }

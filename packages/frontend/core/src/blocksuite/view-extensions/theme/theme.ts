@@ -6,14 +6,13 @@ import {
   type ThemeExtension,
   ThemeExtensionIdentifier,
 } from '@blocksuite/affine/shared/services';
-import {
-  createSignalFromObservable,
-  type Signal,
-} from '@blocksuite/affine/shared/utils';
+import type { Signal } from '@blocksuite/affine/shared/utils';
 import { LifeCycleWatcher } from '@blocksuite/affine/std';
 import { type FrameworkProvider } from '@toeverything/infra';
 import type { Observable } from 'rxjs';
 import { combineLatest, map } from 'rxjs';
+
+import { ScopedObservableSignals } from '../scoped-observable-signals';
 
 export function getThemeExtension(
   framework: FrameworkProvider
@@ -25,6 +24,8 @@ export function getThemeExtension(
     static override readonly key = 'affine-theme';
 
     private readonly themes: Map<string, Signal<ColorScheme>> = new Map();
+
+    private readonly signals = new ScopedObservableSignals();
 
     protected readonly disposables: (() => void)[] = [];
 
@@ -45,9 +46,7 @@ export function getThemeExtension(
             ? ColorScheme.Dark
             : ColorScheme.Light;
         });
-      const { signal: themeSignal, cleanup } =
-        createSignalFromObservable<ColorScheme>(theme$, ColorScheme.Light);
-      this.disposables.push(cleanup);
+      const themeSignal = this.signals.watch(theme$, ColorScheme.Light);
       this.themes.set(keyName, themeSignal);
       return themeSignal;
     }
@@ -75,11 +74,13 @@ export function getThemeExtension(
             : ColorScheme.Light;
         })
       );
-      const { signal: themeSignal, cleanup } =
-        createSignalFromObservable<ColorScheme>(theme$, ColorScheme.Light);
-      this.disposables.push(cleanup);
+      const themeSignal = this.signals.watch(theme$, ColorScheme.Light);
       this.themes.set(doc.id, themeSignal);
       return themeSignal;
+    }
+
+    override mounted() {
+      this.signals.mount();
     }
 
     override unmounted() {
@@ -87,6 +88,7 @@ export function getThemeExtension(
     }
 
     dispose() {
+      this.signals.unmount();
       this.disposables.forEach(dispose => dispose());
     }
   }

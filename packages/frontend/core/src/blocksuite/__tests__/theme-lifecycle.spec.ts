@@ -74,6 +74,7 @@ for (const [name, extensionFactory] of [
         return {
           appTheme,
           canvasTheme,
+          mount: () => watchers.forEach(watcher => watcher.mounted()),
           close: () => watchers.forEach(watcher => watcher.unmounted()),
         };
       };
@@ -92,6 +93,15 @@ for (const [name, extensionFactory] of [
           app.data.next(ColorScheme.Light);
           expect(main.appTheme.value).toBe(ColorScheme.Light);
           expect(main.canvasTheme.value).toBe(ColorScheme.Light);
+          preview.mount();
+          expect(preview.appTheme.value).toBe(ColorScheme.Light);
+          expect(preview.canvasTheme.value).toBe(ColorScheme.Light);
+          app.data.next(ColorScheme.Dark);
+          expect(preview.appTheme.value).toBe(ColorScheme.Dark);
+          expect(preview.canvasTheme.value).toBe(ColorScheme.Dark);
+          preview.close();
+          expect(app.active()).toBe(baseline.app);
+          expect(properties.active()).toBe(baseline.properties);
         }
       } finally {
         main.close();
