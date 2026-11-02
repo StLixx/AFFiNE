@@ -10,7 +10,7 @@ import {
   createSignalFromObservable,
   type Signal,
 } from '@blocksuite/affine/shared/utils';
-import { LifeCycleWatcher, StdIdentifier } from '@blocksuite/affine/std';
+import { LifeCycleWatcher } from '@blocksuite/affine/std';
 import { type FrameworkProvider } from '@toeverything/infra';
 import type { Observable } from 'rxjs';
 import { combineLatest, map } from 'rxjs';
@@ -30,9 +30,7 @@ export function getThemeExtension(
 
     static override setup(di: Container) {
       super.setup(di);
-      di.override(ThemeExtensionIdentifier, AffineThemeExtension, [
-        StdIdentifier,
-      ]);
+      di.override(ThemeExtensionIdentifier, provider => provider.get(this));
     }
 
     getAppTheme() {

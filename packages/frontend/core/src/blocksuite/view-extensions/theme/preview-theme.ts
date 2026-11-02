@@ -8,11 +8,7 @@ import {
   createSignalFromObservable,
   type Signal,
 } from '@blocksuite/affine/shared/utils';
-import {
-  type BlockStdScope,
-  LifeCycleWatcher,
-  StdIdentifier,
-} from '@blocksuite/affine/std';
+import { type BlockStdScope, LifeCycleWatcher } from '@blocksuite/affine/std';
 import type { Container } from '@blocksuite/global/di';
 import type { FrameworkProvider } from '@toeverything/infra';
 import type { Observable } from 'rxjs';
@@ -30,9 +26,7 @@ export function getPreviewThemeExtension(framework: FrameworkProvider) {
 
     static override setup(di: Container) {
       super.setup(di);
-      di.override(ThemeExtensionIdentifier, AffinePagePreviewThemeExtension, [
-        StdIdentifier,
-      ]);
+      di.override(ThemeExtensionIdentifier, provider => provider.get(this));
     }
 
     constructor(std: BlockStdScope) {
