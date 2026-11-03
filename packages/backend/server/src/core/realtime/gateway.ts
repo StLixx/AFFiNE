@@ -1,9 +1,10 @@
+import { randomUUID } from 'node:crypto';
+
 import type {
   RealtimeRequestEnvelope,
   RealtimeSubscribeEnvelope,
   RealtimeUnsubscribeEnvelope,
 } from '@affine/realtime';
-import { getRealtimeInputKey } from '@affine/realtime';
 import {
   applyDecorators,
   Logger,
@@ -64,6 +65,8 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayDisconnect {
     { socketId: string; room: string }
   >();
 
+  private readonly roomOperations = new Map<string, Promise<void>>();
+
   @WebSocketServer()
   private readonly server!: Server;
 
@@ -118,12 +121,18 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayDisconnect {
     const input = handler.input.parse(envelope.input);
     await handler.authorize(user, input as never);
     const room = handler.room(user, input as never);
-    await client.join(room);
-    const subscriptionId = `${client.id}:${envelope.topic}:${getRealtimeInputKey(input)}`;
+    const subscriptionId = `${client.id}:${randomUUID()}`;
     this.subscriptions.set(subscriptionId, {
       socketId: client.id,
       room,
     });
+    try {
+      await this.updateRoomMembership(client, room);
+    } catch (error) {
+      this.subscriptions.delete(subscriptionId);
+      await this.updateRoomMembership(client, room).catch(() => {});
+      throw error;
+    }
     return { data: { subscriptionId } };
   }
 
@@ -138,10 +147,35 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayDisconnect {
     }
     const subscription = this.subscriptions.get(envelope.subscriptionId);
     if (subscription?.socketId === client.id) {
-      await client.leave(subscription.room);
       this.subscriptions.delete(envelope.subscriptionId);
+      await this.updateRoomMembership(client, subscription.room);
     }
     return { data: { ok: true } };
+  }
+
+  private async updateRoomMembership(client: Socket, room: string) {
+    const key = JSON.stringify([client.id, room]);
+    const previous = this.roomOperations.get(key) ?? Promise.resolve();
+    // Join/leave can overlap while an account consumer replaces a subscription.
+    // Use unique handles and serialize room updates so an old leave never wins.
+    const operation = previous
+      .catch(() => {})
+      .then(async () => {
+        const referenced = Array.from(this.subscriptions.values()).some(
+          subscription =>
+            subscription.socketId === client.id && subscription.room === room
+        );
+        if (referenced) await client.join(room);
+        else await client.leave(room);
+      });
+    this.roomOperations.set(key, operation);
+    try {
+      await operation;
+    } finally {
+      if (this.roomOperations.get(key) === operation) {
+        this.roomOperations.delete(key);
+      }
+    }
   }
 
   @OnEvent('realtime.topic.changed', { suppressError: true })

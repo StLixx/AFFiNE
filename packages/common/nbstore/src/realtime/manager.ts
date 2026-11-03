@@ -34,6 +34,7 @@ function rejectAck(error: { name?: string; message?: string; code?: string }) {
 
 export class RealtimeManager {
   private context?: RealtimeContext;
+  private identityAbort = new AbortController();
   private socketConnection?: SocketConnection;
   private socketKey?: string;
   private lastError?: { name: string; message: string };
@@ -56,20 +57,39 @@ export class RealtimeManager {
       !previousContext ||
       previousContext.endpoint !== nextContext.endpoint ||
       previousContext.isSelfHosted !== nextContext.isSelfHosted ||
-      previousContext.authenticated !== nextContext.authenticated;
+      previousContext.authenticated !== nextContext.authenticated ||
+      previousContext.userId !== nextContext.userId;
 
     this.context = nextContext;
+    SocketConnection.setIdentity(
+      nextContext.endpoint,
+      nextContext.isSelfHosted,
+      nextContext.authenticated ? nextContext.userId : undefined
+    );
 
     if (changed) {
       this.resetConnection();
       if (
         previousContext &&
-        previousContext.authenticated !== nextContext.authenticated
+        (previousContext.authenticated !== nextContext.authenticated ||
+          previousContext.userId !== nextContext.userId)
       ) {
         SocketConnection.resetSharedConnection(
           previousContext.endpoint,
           previousContext.isSelfHosted
         );
+        const subscriptions = Array.from(this.subscriptions.values());
+        this.subscriptions.clear();
+        this.subscriptionsNeedResubscribe = false;
+        const previousAbort = this.identityAbort;
+        this.identityAbort = new AbortController();
+        const error = new Error('Realtime account identity changed');
+        error.name = 'RealtimeIdentityChanged';
+        previousAbort.abort(error);
+        for (const subscription of subscriptions) {
+          subscription.subject$.error(error);
+        }
+        this.lastError = undefined;
       }
     }
   }
@@ -81,8 +101,10 @@ export class RealtimeManager {
   ): Promise<RealtimeRequestOutputOf<Op>> {
     const timeoutMs = options?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT;
     const connectAbort = new AbortController();
+    const identitySignal = this.identityAbort.signal;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let abortHandler: (() => void) | undefined;
+    let identityAbortHandler: (() => void) | undefined;
     const abort = () => {
       const error = new Error(`Realtime request aborted: ${op}`);
       error.name = 'AbortError';
@@ -101,6 +123,10 @@ export class RealtimeManager {
     });
     const aborted = new Promise<never>((_resolve, reject) => {
       abortHandler = () => reject(abort());
+      identityAbortHandler = () => reject(identitySignal.reason);
+      identitySignal.addEventListener('abort', identityAbortHandler, {
+        once: true,
+      });
       options?.signal?.addEventListener('abort', abortHandler, { once: true });
     });
 
@@ -110,6 +136,7 @@ export class RealtimeManager {
         timeout,
         aborted,
       ]);
+      identitySignal.throwIfAborted();
       const ack = await Promise.race([
         socket.emitWithAck('realtime:request', {
           op,
@@ -120,6 +147,7 @@ export class RealtimeManager {
         aborted,
       ]);
 
+      identitySignal.throwIfAborted();
       if ('error' in ack) {
         throw rejectAck(ack.error);
       }
@@ -129,6 +157,9 @@ export class RealtimeManager {
       connectAbort.abort();
       if (timeoutId) {
         clearTimeout(timeoutId);
+      }
+      if (identityAbortHandler) {
+        identitySignal.removeEventListener('abort', identityAbortHandler);
       }
       if (abortHandler) {
         options?.signal?.removeEventListener('abort', abortHandler);
@@ -141,6 +172,9 @@ export class RealtimeManager {
     input: RealtimeTopicInputOf<Topic>
   ): Observable<RealtimeTopicEventOf<Topic> | RealtimeSubscriptionReady> {
     return new Observable(subscriber => {
+      const identitySignal = this.identityAbort.signal;
+      const identityChanged = () => subscriber.error(identitySignal.reason);
+      identitySignal.addEventListener('abort', identityChanged, { once: true });
       let subscriptionId: string | undefined;
       let subject$: Subject<RealtimeEvent | RealtimeSubscriptionReady>;
       let closed = false;
@@ -148,6 +182,7 @@ export class RealtimeManager {
       const setup = async () => {
         try {
           const socket = await this.connect();
+          identitySignal.throwIfAborted();
           const ack = await socket.emitWithAck('realtime:subscribe', {
             topic,
             input,
@@ -156,6 +191,7 @@ export class RealtimeManager {
           if ('error' in ack) {
             throw rejectAck(ack.error);
           }
+          identitySignal.throwIfAborted();
           const data = ack.data;
           subscriptionId = data.subscriptionId;
           if (closed) {
@@ -202,6 +238,7 @@ export class RealtimeManager {
 
       return () => {
         closed = true;
+        identitySignal.removeEventListener('abort', identityChanged);
         if (!subscriptionId) {
           return;
         }
@@ -282,6 +319,7 @@ export class RealtimeManager {
   };
 
   private async resubscribeAll() {
+    const identitySignal = this.identityAbort.signal;
     const socket = this.socketConnection?.inner.socket;
     if (!socket?.connected || this.subscriptions.size === 0) {
       return;
@@ -299,6 +337,7 @@ export class RealtimeManager {
           throw rejectAck(ack.error);
         }
 
+        identitySignal.throwIfAborted();
         this.subscriptions.delete(subscriptionId);
         this.subscriptions.set(ack.data.subscriptionId, subscription);
         subscription.onResubscribed(ack.data.subscriptionId);
@@ -306,6 +345,7 @@ export class RealtimeManager {
           type: 'ready',
         });
       } catch (error) {
+        if (identitySignal.aborted) return;
         this.lastError = normalizeError(error);
         this.subscriptions.delete(subscriptionId);
         subscription.subject$.error(error);

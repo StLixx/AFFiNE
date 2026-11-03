@@ -492,6 +492,8 @@ export type RealtimeStatus = {
 };
 
 export type RealtimeConfigureInput = {
+  /** Stable authenticated subject; a boolean cannot distinguish account switches. */
+  userId?: string;
   endpoint: string;
   isSelfHosted: boolean;
   authenticated: boolean;

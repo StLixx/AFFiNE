@@ -31,6 +31,7 @@ import { AuthSessionPrincipal, Session } from './session';
 import { AuthSessionHttpError } from './session-exchange';
 import { isLikelyJwt } from './token';
 
+const WEBSOCKET_SUBJECT_KEY = 'affineAuthenticatedUserId';
 const PUBLIC_ENTRYPOINT_SYMBOL = Symbol('public');
 const INTERNAL_ENTRYPOINT_SYMBOL = Symbol('internal');
 const INTERNAL_ACCESS_TOKEN_TTL_MS = 5 * 60 * 1000;
@@ -105,7 +106,13 @@ export class AuthGuard implements CanActivate, OnModuleInit {
       [clazz, handler]
     );
 
-    const authedUser = await this.signIn(req, res, isPublic);
+    let authedUser: Session | null;
+    if (context.getType() === 'ws') {
+      const socket = context.switchToWs().getClient<Socket>();
+      authedUser = await this.reauthenticateWebsocket(socket, req, isPublic);
+    } else {
+      authedUser = await this.signIn(req, res, isPublic);
+    }
 
     if (isPublic) {
       return true;
@@ -116,6 +123,45 @@ export class AuthGuard implements CanActivate, OnModuleInit {
     }
 
     return true;
+  }
+
+  async reauthenticateWebsocket(
+    socket: Socket,
+    req: Request = socket.request as Request,
+    isPublic = false
+  ): Promise<Session> {
+    let authedUser: Session | null;
+    const expectedUserId =
+      socket.data[WEBSOCKET_SUBJECT_KEY] ?? req.session?.user.id;
+    if (expectedUserId) {
+      socket.data[WEBSOCKET_SUBJECT_KEY] = expectedUserId;
+    }
+    // Socket.IO reuses the handshake request for every message. Reauthenticate
+    // on a fresh request facade, so concurrent packets cannot reuse or replace
+    // a cached principal while another packet is awaiting authentication.
+    const freshRequest = Object.assign(Object.create(req) as Request, {
+      session: undefined,
+      authType: undefined,
+    });
+    try {
+      authedUser = await this.signIn(freshRequest, undefined, isPublic);
+      if (
+        !authedUser ||
+        authedUser.user.disabled ||
+        (expectedUserId && authedUser.user.id !== expectedUserId)
+      ) {
+        throw new AuthenticationRequired();
+      }
+      req.session = authedUser;
+      req.authType = freshRequest.authType;
+    } catch (error) {
+      req.session = undefined;
+      // Let the exception filter flush the rejection before closing only
+      // this invalid socket. No local document or pending queue is removed.
+      setImmediate(() => socket.disconnect(true));
+      throw error;
+    }
+    return authedUser;
   }
 
   async signIn(
@@ -337,6 +383,8 @@ export const AuthWebsocketOptionsProvider: FactoryProvider = {
   useFactory: (config: Config, guard: AuthGuard) => {
     return {
       ...config.websocket,
+      revalidateSession: (socket: Socket) =>
+        guard.reauthenticateWebsocket(socket),
       canActivate: async (socket: Socket) => {
         const upgradeReq = socket.client.request as Request;
         const handshake = socket.handshake;
@@ -356,7 +404,16 @@ export const AuthWebsocketOptionsProvider: FactoryProvider = {
           }
         })();
 
-        return !!session;
+        if (
+          !session ||
+          session.user.disabled ||
+          (typeof handshake.auth.userId === 'string' &&
+            handshake.auth.userId !== session.user.id)
+        ) {
+          return false;
+        }
+        socket.data[WEBSOCKET_SUBJECT_KEY] = session.user.id;
+        return true;
       },
     };
   },

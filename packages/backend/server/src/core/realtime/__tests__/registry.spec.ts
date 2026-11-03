@@ -245,14 +245,7 @@ test('gateway authorizes subscription and joins room', async t => {
   });
 
   t.deepEqual(joined, ['workspace:space']);
-  t.deepEqual(result, {
-    data: {
-      subscriptionId: `socket-1:comment.changed:${getRealtimeInputKey({
-        workspaceId: 'space',
-        docId: 'doc',
-      })}`,
-    },
-  });
+  t.regex(result.data.subscriptionId, /^socket-1:[0-9a-f-]{36}$/);
 
   t.like(
     await gateway.onSubscribe(user, client as never, {

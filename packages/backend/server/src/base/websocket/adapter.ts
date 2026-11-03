@@ -25,6 +25,7 @@ export class SocketIoAdapter extends IoAdapter {
     const logger = this.app.get(AFFiNELogger);
     const config = this.app.get(WEBSOCKET_OPTIONS) as Config['websocket'] & {
       canActivate: (socket: Socket) => Promise<boolean>;
+      revalidateSession?: (socket: Socket) => Promise<unknown>;
     };
     const url = this.app.get(URLHelper);
     const allowedOrigins = buildCorsAllowedOrigins(url);
@@ -59,6 +60,33 @@ export class SocketIoAdapter extends IoAdapter {
           .canActivate(socket)
           .then(pass => {
             if (pass) {
+              const revalidateSession = config.revalidateSession;
+              if (revalidateSession) {
+                socket.use((packet, done) => {
+                  revalidateSession(socket).then(
+                    () => done(),
+                    () => {
+                      const error = new AuthenticationRequired();
+                      const rejection = {
+                        error: {
+                          status: error.status,
+                          code: error.name.toUpperCase(),
+                          type: error.type.toUpperCase(),
+                          name: error.name.toUpperCase(),
+                          message: error.message,
+                        },
+                      };
+                      const acknowledge = packet[packet.length - 1];
+                      if (typeof acknowledge === 'function') {
+                        acknowledge(rejection);
+                      } else {
+                        socket.emit('error', rejection);
+                      }
+                      done(error);
+                    }
+                  );
+                });
+              }
               next();
             } else {
               throw new AuthenticationRequired();
